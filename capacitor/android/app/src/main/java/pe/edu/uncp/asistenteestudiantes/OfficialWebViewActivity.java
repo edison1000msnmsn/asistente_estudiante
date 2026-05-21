@@ -17,6 +17,9 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class OfficialWebViewActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -26,8 +29,11 @@ public class OfficialWebViewActivity extends Activity {
     private String selectorCampo1;
     private String selectorCampo2;
     private String selectorButton;
+    private String apiBase;
+    private String studentId;
     private long fireAt;
     private boolean fired = false;
+    private boolean creditReported = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,6 +51,8 @@ public class OfficialWebViewActivity extends Activity {
         selectorCampo1 = value(uri, "s1", "input[name=\"dni\"], input[placeholder*=\"DNI\"], input[placeholder*=\"Documento\"]");
         selectorCampo2 = value(uri, "s2", "input[name=\"codigo\"], input[name=\"matricula\"], input[placeholder*=\"Codigo\"], input[placeholder*=\"Código\"], input[placeholder*=\"Matricula\"], input[placeholder*=\"Matrícula\"]");
         selectorButton = value(uri, "button", "button[type=\"submit\"], button, input[type=\"submit\"]");
+        apiBase = value(uri, "apiBase", "");
+        studentId = value(uri, "studentId", "");
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
 
         webView = new WebView(this);
@@ -94,7 +102,58 @@ public class OfficialWebViewActivity extends Activity {
         webView.evaluateJavascript(script, null);
         Toast.makeText(this, "Datos enviados al formulario oficial", Toast.LENGTH_SHORT).show();
         handler.postDelayed(this::captureTicket, 5000);
+        handler.postDelayed(this::detectTicketResult, 5500);
         handler.postDelayed(this::captureTicket, 9000);
+        handler.postDelayed(this::detectTicketResult, 9500);
+    }
+
+    private void detectTicketResult() {
+        if (webView == null || creditReported) return;
+        String script = "(function(){return (document.body && document.body.innerText || '').toUpperCase();})();";
+        webView.evaluateJavascript(script, value -> {
+            String text = value == null ? "" : value.toUpperCase();
+            boolean success = text.contains("TICKET VIRTUAL")
+                    || text.contains("TICKET GENERADO")
+                    || text.contains("GENERADO EXITOSAMENTE")
+                    || text.contains("IMPRIMIR TICKET");
+            boolean closed = text.contains("CUPOS AGOTADOS")
+                    || (text.contains("REGISTRO") && text.contains("CERR"))
+                    || text.contains("NO HAY CUPO");
+            if (success) {
+                creditReported = true;
+                reportCreditUse();
+            } else if (closed) {
+                Toast.makeText(this, "La pagina oficial no genero ticket: sin cupos o registro cerrado", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void reportCreditUse() {
+        if (apiBase.isEmpty() || studentId.isEmpty()) {
+            Toast.makeText(this, "Ticket detectado; no se pudo reportar cupo al backend", Toast.LENGTH_LONG).show();
+            return;
+        }
+        new Thread(() -> {
+            try {
+                String normalizedBase = apiBase.endsWith("/") ? apiBase.substring(0, apiBase.length() - 1) : apiBase;
+                URL url = new URL(normalizedBase + "/api/student/" + java.net.URLEncoder.encode(studentId, "UTF-8") + "/use-credit");
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("POST");
+                connection.setConnectTimeout(5000);
+                connection.setReadTimeout(5000);
+                connection.setRequestProperty("Content-Type", "application/json");
+                connection.setDoOutput(true);
+                OutputStream out = connection.getOutputStream();
+                out.write("{}".getBytes("UTF-8"));
+                out.flush();
+                out.close();
+                int code = connection.getResponseCode();
+                handler.post(() -> Toast.makeText(this, code >= 200 && code < 300 ? "Ticket confirmado en backend" : "Ticket detectado; backend no desconto cupo", Toast.LENGTH_LONG).show());
+                connection.disconnect();
+            } catch (Exception error) {
+                handler.post(() -> Toast.makeText(this, "Ticket detectado; no se pudo conectar al backend", Toast.LENGTH_LONG).show());
+            }
+        }).start();
     }
 
     private void captureTicket() {

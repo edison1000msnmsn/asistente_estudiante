@@ -94,6 +94,15 @@ function targetDate(config = db.config, now = new Date()) {
   return date;
 }
 
+function limaDayKey(value = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date(value));
+}
+
 function requireAdmin(req, res, next) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.headers['x-admin-token'];
   if (!env.adminToken || token !== env.adminToken) return res.status(401).json({ ok: false, message: 'Token admin invalido.' });
@@ -160,7 +169,7 @@ async function runControlledAttempts(student, clientId) {
   const config = db.config;
   const startAt = targetDate(config).getTime() - Number(config.preFireMs);
   const now = Date.now();
-  if (now < startAt) {
+  if (config.targetMode !== 'webview' && now < startAt) {
     return { ok: false, status: 'scheduled_later', message: 'Aun no inicia la ventana de pre-disparo.', startAt: new Date(startAt).toISOString() };
   }
 
@@ -215,6 +224,7 @@ async function runControlledAttempts(student, clientId) {
       await saveDb();
       break;
     }
+    if (attempt.status === 'webview_required') break;
     if (attempt.status === 'rate_limit') break;
     if (i < Number(config.maxAttempts) - 1) {
       const delay = attempt.status === 'failed' ? Math.min(1000, Number(config.intervalMs) * 2) : Number(config.intervalMs);
@@ -223,10 +233,11 @@ async function runControlledAttempts(student, clientId) {
   }
 
   const success = results.find((item) => item.status === 'success');
+  const webviewRequired = results.find((item) => item.status === 'webview_required');
   return {
-    ok: Boolean(success),
-    status: success ? 'success' : 'finished',
-    message: success ? 'Ticket generado o endpoint oficial confirmo exito.' : 'Intentos finalizados sin exito confirmado.',
+    ok: Boolean(success || webviewRequired),
+    status: success ? 'success' : (webviewRequired ? 'webview_required' : 'finished'),
+    message: success ? 'Ticket generado o endpoint oficial confirmo exito.' : (webviewRequired ? 'Abriendo pagina oficial para generar o verificar ticket.' : 'Intentos finalizados sin exito confirmado.'),
     attempts: results
   };
 }
@@ -274,22 +285,29 @@ app.post('/api/student/:id/request-access', async (req, res) => {
 
 app.get('/api/student/:id/status', (req, res) => {
   const student = db.students[req.params.id];
-  res.json({ ok: true, student: student || null, authorized: Boolean(student && student.status === 'approved' && Number(student.credits) > 0) });
+  const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
+  res.json({ ok: true, student: student || null, authorized: Boolean(student && student.status === 'approved' && (Number(student.credits) > 0 || hasTicketToday)), hasTicketToday });
 });
 
 app.post('/api/student/:id/use-credit', async (req, res) => {
   const student = db.students[req.params.id];
-  if (!student || Number(student.credits) <= 0) return res.status(403).json({ ok: false, message: 'Sin cupos disponibles.' });
+  if (!student) return res.status(403).json({ ok: false, message: 'Alumno no encontrado.' });
+  if (student.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey()) {
+    return res.json({ ok: true, credits: student.credits, alreadyUsedToday: true, message: 'Ticket ya registrado hoy; no se descuenta otro cupo.' });
+  }
+  if (Number(student.credits) <= 0) return res.status(403).json({ ok: false, message: 'Sin cupos disponibles.' });
   student.credits = Math.max(0, Number(student.credits) - 1);
+  student.lastSuccessAt = new Date().toISOString();
   await saveDb();
-  res.json({ ok: true, credits: student.credits });
+  res.json({ ok: true, credits: student.credits, alreadyUsedToday: false });
 });
 
 app.post('/api/attempts/run', async (req, res) => {
   const parsed = validateStudentPayload(req.body);
   if (parsed.error) return res.status(400).json({ ok: false, message: parsed.error });
   const student = db.students[parsed.id];
-  if (!student || student.status !== 'approved' || Number(student.credits) <= 0) {
+  const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
+  if (!student || student.status !== 'approved' || (Number(student.credits) <= 0 && !hasTicketToday)) {
     return res.status(403).json({ ok: false, status: 'not_authorized', message: 'Alumno sin autorizacion o sin cupos.' });
   }
   const result = await runControlledAttempts(student, clean(req.body.clientId) || 'student-app');

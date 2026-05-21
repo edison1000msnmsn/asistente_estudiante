@@ -84,7 +84,6 @@ function StudentApp({ onSwitchRole }) {
   const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
   const correctedNow = nowTick + serverOffset;
   const countdownMs = targetMs ? targetMs - correctedNow : 0;
-  const preWindowOpen = config ? countdownMs <= Number(config.config.preFireMs) : false;
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 47);
@@ -175,10 +174,12 @@ function StudentApp({ onSwitchRole }) {
       url: config?.config?.targetPage || TARGET_PAGE,
       dni,
       codigo,
+      studentId: id,
+      apiBase: API_BASE || location.origin,
       s1: selectors.campo1 || 'input[placeholder*="DNI"]',
       s2: selectors.campo2 || 'input[placeholder*="Código"]',
       button: selectors.button || 'button',
-      fireAt: String(targetMs || Date.now())
+      fireAt: String(Date.now())
     });
     const nativeUrl = `asistente://official?${params.toString()}`;
     if (/capacitor|android/i.test(navigator.userAgent)) {
@@ -254,10 +255,10 @@ function StudentApp({ onSwitchRole }) {
             <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
             <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
           </div>
-          <button className="primary" disabled={busy || !status?.authorized || !preWindowOpen} onClick={runAttempts}>
-            <Activity size={18} /> Generar tiket
+          <button className="primary" disabled={busy || !status?.authorized} onClick={runAttempts}>
+            <Activity size={18} /> Generar o verificar tiket
           </button>
-          {!preWindowOpen && config && <p className="hint">El boton se habilita al entrar en la ventana controlada previa.</p>}
+          {config && <p className="hint">Disponible para generar si aun hay cupos o verificar/recordar un ticket ya emitido en la pagina oficial.</p>}
         </section>
 
         <section className="panel">
