@@ -34,6 +34,7 @@ TZ=America/Lima
 ```
 
 Cuando Railway genere el dominio publico, actualiza `ALLOWED_ORIGINS` y usa esa URL como backend para la app Android.
+Para la web desplegada en el mismo servicio, deja `VITE_API_BASE` vacio o sin configurar; asi el frontend usa la misma URL de Railway.
 
 ## Pantallas
 
