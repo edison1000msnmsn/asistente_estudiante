@@ -228,6 +228,53 @@ button:disabled {
   padding: 18px;
 }
 
+.rolePage {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #eef2f7;
+}
+
+.roleHero {
+  width: min(760px, 100%);
+}
+
+.roleHero h1 {
+  margin: 4px 0 20px;
+  font-size: clamp(2rem, 7vw, 3.2rem);
+  letter-spacing: 0;
+}
+
+.roleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.roleButton {
+  min-height: 190px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 10px;
+  padding: 22px;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #d7e0ea;
+  box-shadow: 0 14px 30px rgba(28, 42, 58, .08);
+}
+
+.roleButton span {
+  font-size: 1.35rem;
+  font-weight: 850;
+}
+
+.roleButton small {
+  color: #607488;
+  line-height: 1.45;
+}
+
 .authBox {
   width: min(420px, 100%);
   display: grid;
@@ -304,8 +351,14 @@ button:disabled {
   padding: 12px;
 }
 
+.topActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 @media (max-width: 820px) {
-  .studentGrid, .twoCols, .cards, .configGrid {
+  .studentGrid, .twoCols, .cards, .configGrid, .roleGrid {
     grid-template-columns: 1fr;
   }
 

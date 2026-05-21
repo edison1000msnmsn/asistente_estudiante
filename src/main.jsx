@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   ListChecks,
   LogOut,
+  School,
   Save,
   Send,
   Settings,
@@ -19,7 +20,9 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || '';
+const DEFAULT_REMOTE_API = import.meta.env.VITE_DEFAULT_API_BASE || 'https://asistenteestudiante-production.up.railway.app';
+const isNativeApp = Boolean(window.Capacitor) || location.protocol === 'capacitor:' || (location.hostname === 'localhost' && location.protocol === 'https:');
+const API_BASE = import.meta.env.VITE_API_BASE || (isNativeApp ? DEFAULT_REMOTE_API : '');
 const TARGET_PAGE = import.meta.env.VITE_TARGET_PAGE || 'https://comedor.uncp.edu.pe/charola';
 
 function studentId(dni, codigo) {
@@ -66,7 +69,7 @@ function StatusBadge({ ok, children }) {
   return <span className={`badge ${ok ? 'ok' : 'warn'}`}>{children}</span>;
 }
 
-function StudentApp() {
+function StudentApp({ onSwitchRole }) {
   const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
   const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
   const [status, setStatus] = useState(null);
@@ -208,9 +211,12 @@ function StudentApp() {
           <p className="eyebrow">Acceso autorizado</p>
           <h1>Asistente de estudiantes</h1>
         </div>
-        <a className="iconButton" href={config?.config?.targetPage || TARGET_PAGE} target="_blank" rel="noreferrer" title="Abrir pagina oficial">
-          <Ticket size={20} />
-        </a>
+        <div className="topActions">
+          <button className="iconButton" onClick={onSwitchRole} title="Cambiar perfil"><Users size={20} /></button>
+          <a className="iconButton" href={config?.config?.targetPage || TARGET_PAGE} target="_blank" rel="noreferrer" title="Abrir pagina oficial">
+            <Ticket size={20} />
+          </a>
+        </div>
       </header>
 
       <main className="studentGrid">
@@ -286,7 +292,7 @@ function StudentApp() {
   );
 }
 
-function AdminApp() {
+function AdminApp({ onSwitchRole }) {
   const [token, setToken] = useState(localStorage.getItem('admin:token') || '');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -375,7 +381,10 @@ function AdminApp() {
           <p className="eyebrow">Administracion</p>
           <h1>Panel de control</h1>
         </div>
-        <button className="iconButton" title="Cerrar sesion" onClick={() => { localStorage.removeItem('admin:token'); setToken(''); }}><LogOut size={20} /></button>
+        <div className="topActions">
+          <button className="iconButton" title="Cambiar perfil" onClick={onSwitchRole}><Users size={20} /></button>
+          <button className="iconButton" title="Cerrar sesion" onClick={() => { localStorage.removeItem('admin:token'); setToken(''); }}><LogOut size={20} /></button>
+        </div>
       </header>
       <nav className="tabs">
         {[
@@ -445,14 +454,52 @@ function ConfigForm({ config, saveConfig }) {
   );
 }
 
+function RoleSelection({ onSelect }) {
+  return (
+    <div className="rolePage">
+      <section className="roleHero">
+        <p className="eyebrow">Seleccion de acceso</p>
+        <h1>Asistente de estudiantes</h1>
+        <div className="roleGrid">
+          <button className="roleButton" onClick={() => onSelect('student')}>
+            <School size={30} />
+            <span>Estudiante</span>
+            <small>Solicitar cupo, sincronizar hora y generar tiket.</small>
+          </button>
+          <button className="roleButton" onClick={() => onSelect('admin')}>
+            <ShieldCheck size={30} />
+            <span>Administrador</span>
+            <small>Gestionar alumnos, solicitudes, cupos e intentos.</small>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function Root() {
-  const [mode, setMode] = useState(location.hash === '#admin' ? 'admin' : 'student');
+  const initialMode = location.hash === '#admin' ? 'admin' : localStorage.getItem('app:role') || '';
+  const [mode, setMode] = useState(initialMode);
+  function selectMode(nextMode) {
+    localStorage.setItem('app:role', nextMode);
+    setMode(nextMode);
+    if (nextMode === 'admin') location.hash = 'admin';
+    if (nextMode === 'student' && location.hash === '#admin') history.replaceState(null, '', location.pathname);
+  }
+  function switchRole() {
+    localStorage.removeItem('app:role');
+    setMode('');
+    if (location.hash === '#admin') history.replaceState(null, '', location.pathname);
+  }
   useEffect(() => {
-    const onHash = () => setMode(location.hash === '#admin' ? 'admin' : 'student');
+    const onHash = () => {
+      if (location.hash === '#admin') selectMode('admin');
+    };
     addEventListener('hashchange', onHash);
     return () => removeEventListener('hashchange', onHash);
   }, []);
-  return mode === 'admin' ? <AdminApp /> : <StudentApp />;
+  if (!mode) return <RoleSelection onSelect={selectMode} />;
+  return mode === 'admin' ? <AdminApp onSwitchRole={switchRole} /> : <StudentApp onSwitchRole={switchRole} />;
 }
 
 createRoot(document.getElementById('root')).render(<Root />);
