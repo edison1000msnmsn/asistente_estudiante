@@ -1,0 +1,458 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  Activity,
+  CheckCircle2,
+  Clock3,
+  History,
+  KeyRound,
+  LayoutDashboard,
+  ListChecks,
+  LogOut,
+  Save,
+  Send,
+  Settings,
+  ShieldCheck,
+  Ticket,
+  Users,
+  XCircle
+} from 'lucide-react';
+import './styles.css';
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+const TARGET_PAGE = import.meta.env.VITE_TARGET_PAGE || 'https://comedor.uncp.edu.pe/charola';
+
+function studentId(dni, codigo) {
+  return `${String(dni).trim()}:${String(codigo).trim()}`;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({ ok: false, message: 'Respuesta invalida.' }));
+  if (!response.ok) throw new Error(data.message || data.status || 'Error de servidor');
+  return data;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatCountdown(ms) {
+  const safe = Math.max(0, ms);
+  const hours = Math.floor(safe / 3_600_000);
+  const minutes = Math.floor((safe % 3_600_000) / 60_000);
+  const seconds = Math.floor((safe % 60_000) / 1000);
+  const milli = Math.floor(safe % 1000);
+  return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}.${String(milli).padStart(3, '0')}`;
+}
+
+function Field({ label, value, onChange, type = 'text', placeholder }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function StatusBadge({ ok, children }) {
+  return <span className={`badge ${ok ? 'ok' : 'warn'}`}>{children}</span>;
+}
+
+function StudentApp() {
+  const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
+  const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
+  const [status, setStatus] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [serverOffset, setServerOffset] = useState(0);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [history, setHistory] = useState(JSON.parse(localStorage.getItem('student:history') || '[]'));
+
+  const id = useMemo(() => studentId(dni, codigo), [dni, codigo]);
+  const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
+  const correctedNow = nowTick + serverOffset;
+  const countdownMs = targetMs ? targetMs - correctedNow : 0;
+  const preWindowOpen = config ? countdownMs <= Number(config.config.preFireMs) : false;
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 47);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    refreshConfig();
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('student:dni', dni);
+    localStorage.setItem('student:codigo', codigo);
+  }, [dni, codigo]);
+
+  async function refreshConfig() {
+    const [time, target] = await Promise.all([
+      api('/api/time'),
+      api('/api/config/target-time')
+    ]);
+    setServerOffset(Number(time.epochMs) - Date.now());
+    setConfig(target);
+  }
+
+  async function checkStatus() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const data = await api(`/api/student/${encodeURIComponent(id)}/status`);
+      setStatus(data);
+      await refreshConfig();
+    } catch (error) {
+      setResult({ ok: false, message: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestAccess() {
+    setBusy(true);
+    try {
+      const data = await api(`/api/student/${encodeURIComponent(id)}/request-access`, {
+        method: 'POST',
+        body: JSON.stringify({ dni, codigo })
+      });
+      setResult({ ok: true, message: `Solicitud enviada: ${data.request.id}` });
+      await checkStatus();
+    } catch (error) {
+      setResult({ ok: false, message: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runAttempts() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const isWebViewMode = config?.config?.targetMode === 'webview';
+      const data = await api('/api/attempts/run', {
+        method: 'POST',
+        body: JSON.stringify({ dni, codigo, clientId: 'student-app' })
+      });
+      const entry = {
+        at: new Date().toISOString(),
+        ok: data.ok,
+        message: data.message,
+        attempts: data.attempts || []
+      };
+      const next = [entry, ...history].slice(0, 30);
+      setHistory(next);
+      localStorage.setItem('student:history', JSON.stringify(next));
+      setResult(data);
+      if (isWebViewMode) {
+        openOfficialWebView();
+      }
+      await checkStatus();
+    } catch (error) {
+      setResult({ ok: false, message: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openOfficialWebView() {
+    const selectors = config?.config?.selectors || {};
+    const params = new URLSearchParams({
+      url: config?.config?.targetPage || TARGET_PAGE,
+      dni,
+      codigo,
+      s1: selectors.campo1 || 'input[placeholder*="DNI"]',
+      s2: selectors.campo2 || 'input[placeholder*="Código"]',
+      button: selectors.button || 'button',
+      fireAt: String(targetMs || Date.now())
+    });
+    const nativeUrl = `asistente://official?${params.toString()}`;
+    if (/capacitor|android/i.test(navigator.userAgent)) {
+      window.location.href = nativeUrl;
+      return;
+    }
+    window.open(config?.config?.targetPage || TARGET_PAGE, '_blank', 'noopener,noreferrer');
+  }
+
+  function saveReceipt() {
+    const receipt = {
+      dni,
+      codigo,
+      result,
+      savedAt: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(receipt, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `comprobante-${dni}-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="page">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Acceso autorizado</p>
+          <h1>Asistente de estudiantes</h1>
+        </div>
+        <a className="iconButton" href={config?.config?.targetPage || TARGET_PAGE} target="_blank" rel="noreferrer" title="Abrir pagina oficial">
+          <Ticket size={20} />
+        </a>
+      </header>
+
+      <main className="studentGrid">
+        <section className="panel mainPanel">
+          <div className="sectionTitle">
+            <ShieldCheck />
+            <h2>Datos del alumno</h2>
+          </div>
+          <div className="twoCols">
+            <Field label="DNI" value={dni} onChange={setDni} placeholder="Ej. 70123456" />
+            <Field label="Codigo estudiante" value={codigo} onChange={setCodigo} placeholder="Ej. 2020123456" />
+          </div>
+          <div className="actions">
+            <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>
+            <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar acceso</button>
+          </div>
+          {status && (
+            <div className="statusLine">
+              <StatusBadge ok={status.authorized}>{status.authorized ? 'Autorizado' : 'Sin cupo activo'}</StatusBadge>
+              <span>Cupos: {status.student?.credits ?? 0}</span>
+              <span>Estado: {status.student?.status || 'no registrado'}</span>
+            </div>
+          )}
+        </section>
+
+        <section className="panel timerPanel">
+          <div className="sectionTitle">
+            <Clock3 />
+            <h2>Hora objetivo</h2>
+          </div>
+          <div className="countdown">{config ? formatCountdown(countdownMs) : '--:--:--.---'}</div>
+          <div className="metaGrid">
+            <span>Servidor</span><strong>{serverOffset >= 0 ? '+' : ''}{serverOffset} ms</strong>
+            <span>Pre-disparo</span><strong>{config?.config?.preFireMs ?? '-'} ms</strong>
+            <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
+            <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
+          </div>
+          <button className="primary" disabled={busy || !status?.authorized || !preWindowOpen} onClick={runAttempts}>
+            <Activity size={18} /> Generar tiket
+          </button>
+          {!preWindowOpen && config && <p className="hint">El boton se habilita al entrar en la ventana controlada previa.</p>}
+        </section>
+
+        <section className="panel">
+          <div className="sectionTitle">
+            {result?.ok ? <CheckCircle2 /> : <XCircle />}
+            <h2>Resultado</h2>
+          </div>
+          <pre className="resultBox">{result ? JSON.stringify(result, null, 2) : 'Sin ejecuciones todavia.'}</pre>
+          <div className="actions">
+            <button disabled={!result} onClick={saveReceipt}><Save size={18} /> Guardar comprobante</button>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="sectionTitle">
+            <History />
+            <h2>Historial local</h2>
+          </div>
+          <div className="list">
+            {history.length === 0 && <p className="hint">Los intentos quedaran guardados en este dispositivo.</p>}
+            {history.map((item) => (
+              <div className="row" key={item.at}>
+                <span>{new Date(item.at).toLocaleString()}</span>
+                <StatusBadge ok={item.ok}>{item.ok ? 'exito' : 'fallo'}</StatusBadge>
+                <small>{item.message}</small>
+              </div>
+            ))}
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function AdminApp() {
+  const [token, setToken] = useState(localStorage.getItem('admin:token') || '');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [tab, setTab] = useState('dashboard');
+  const [data, setData] = useState({ stats: null, students: [], requests: [], attempts: [], config: null });
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    if (token) loadAdmin();
+  }, [token]);
+
+  async function login() {
+    const response = await api('/admin/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    setToken(response.token);
+    localStorage.setItem('admin:token', response.token);
+  }
+
+  async function loadAdmin() {
+    try {
+      const [stats, students, requests, attempts, config] = await Promise.all([
+        api('/admin/stats', { token }),
+        api('/admin/students', { token }),
+        api('/admin/requests', { token }),
+        api('/admin/attempts', { token }),
+        api('/api/config/target-time')
+      ]);
+      setData({ stats: stats.stats, students: students.students, requests: requests.requests, attempts: attempts.attempts, config: config.config });
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+
+  async function approve(id, approved) {
+    await api(`/admin/requests/${id}/approve`, { token, method: 'POST', body: JSON.stringify({ approved, credits: 1 }) });
+    await loadAdmin();
+  }
+
+  async function setCredits(id, credits) {
+    await api(`/admin/students/${encodeURIComponent(id)}/set-credits`, { token, method: 'POST', body: JSON.stringify({ credits }) });
+    await loadAdmin();
+  }
+
+  async function saveConfig(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const next = Object.fromEntries(form.entries());
+    const payload = {
+      targetHour: Number(next.targetHour),
+      targetMinute: Number(next.targetMinute),
+      targetSecond: Number(next.targetSecond),
+      targetMs: Number(next.targetMs),
+      preFireMs: Number(next.preFireMs),
+      maxAttempts: Number(next.maxAttempts),
+      intervalMs: Number(next.intervalMs),
+      requestTimeoutMs: Number(next.requestTimeoutMs),
+      rateLimitPerUser: Number(next.rateLimitPerUser),
+      globalRateLimit: Number(next.globalRateLimit),
+      stopOnFirstSuccess: next.stopOnFirstSuccess === 'on',
+      targetMode: next.targetMode,
+      targetEndpoint: next.targetEndpoint,
+      targetPage: next.targetPage,
+      selectors: { campo1: next.selectorCampo1, campo2: next.selectorCampo2, button: next.selectorButton }
+    };
+    await api('/admin/config', { token, method: 'POST', body: JSON.stringify(payload) });
+    setMessage('Configuracion guardada.');
+    await loadAdmin();
+  }
+
+  if (!token) {
+    return (
+      <div className="authPage">
+        <section className="panel authBox">
+          <div className="sectionTitle"><KeyRound /><h1>Panel administrador</h1></div>
+          <Field label="Correo admin" value={email} onChange={setEmail} />
+          <Field label="Password" type="password" value={password} onChange={setPassword} />
+          <button className="primary" onClick={login}><ShieldCheck size={18} /> Entrar</button>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Administracion</p>
+          <h1>Panel de control</h1>
+        </div>
+        <button className="iconButton" title="Cerrar sesion" onClick={() => { localStorage.removeItem('admin:token'); setToken(''); }}><LogOut size={20} /></button>
+      </header>
+      <nav className="tabs">
+        {[
+          ['dashboard', LayoutDashboard, 'Dashboard'],
+          ['students', Users, 'Alumnos'],
+          ['requests', ListChecks, 'Solicitudes'],
+          ['attempts', History, 'Intentos'],
+          ['config', Settings, 'Configuracion']
+        ].map(([key, Icon, label]) => (
+          <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={17} /> {label}</button>
+        ))}
+      </nav>
+      {message && <p className="notice">{message}</p>}
+
+      {tab === 'dashboard' && <Dashboard stats={data.stats} />}
+      {tab === 'students' && <Students students={data.students} setCredits={setCredits} />}
+      {tab === 'requests' && <Requests requests={data.requests} approve={approve} />}
+      {tab === 'attempts' && <Attempts attempts={data.attempts} />}
+      {tab === 'config' && <ConfigForm config={data.config} saveConfig={saveConfig} />}
+    </div>
+  );
+}
+
+function Dashboard({ stats }) {
+  const items = [
+    ['Alumnos', stats?.students ?? 0],
+    ['Solicitudes pendientes', stats?.pendingRequests ?? 0],
+    ['Intentos', stats?.attempts ?? 0],
+    ['Exitos', stats?.success ?? 0],
+    ['Fallos', stats?.failed ?? 0],
+    ['Cupos disponibles', stats?.creditsAvailable ?? 0]
+  ];
+  return <main className="cards">{items.map(([label, value]) => <section className="metric" key={label}><span>{label}</span><strong>{value}</strong></section>)}</main>;
+}
+
+function Students({ students, setCredits }) {
+  return <main className="panel tablePanel"><h2>Alumnos autorizados</h2>{students.map((s) => <div className="tableRow" key={s.id}><span>{s.dni}</span><span>{s.codigo}</span><span>{s.status}</span><input type="number" defaultValue={s.credits} min="0" onBlur={(e) => setCredits(s.id, Number(e.target.value))} /></div>)}</main>;
+}
+
+function Requests({ requests, approve }) {
+  return <main className="panel tablePanel"><h2>Solicitudes</h2>{requests.map((r) => <div className="tableRow" key={r.id}><span>{r.dni}</span><span>{r.codigo}</span><span>{r.status}</span><button onClick={() => approve(r.id, true)}>Aprobar</button><button onClick={() => approve(r.id, false)}>Rechazar</button></div>)}</main>;
+}
+
+function Attempts({ attempts }) {
+  return <main className="panel tablePanel"><h2>Historial de intentos</h2>{attempts.map((a) => <div className="tableRow wide" key={a.id}><span>{new Date(a.createdAt).toLocaleString()}</span><span>{a.dni}</span><span>{a.status}</span><small>{a.response?.payload?.message || a.response?.payload?.status || a.mode}</small></div>)}</main>;
+}
+
+function ConfigForm({ config, saveConfig }) {
+  if (!config) return null;
+  return (
+    <main className="panel">
+      <h2>Configuracion</h2>
+      <form className="configGrid" onSubmit={saveConfig}>
+        {['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'rateLimitPerUser', 'globalRateLimit'].map((key) => (
+          <label className="field" key={key}><span>{key}</span><input name={key} type="number" defaultValue={config[key]} /></label>
+        ))}
+        <label className="field"><span>Modo</span><select name="targetMode" defaultValue={config.targetMode}><option value="api">api</option><option value="webview">webview</option></select></label>
+        <label className="field wideField"><span>Endpoint</span><input name="targetEndpoint" defaultValue={config.targetEndpoint} /></label>
+        <label className="field wideField"><span>Pagina oficial</span><input name="targetPage" defaultValue={config.targetPage} /></label>
+        <label className="field"><span>Selector campo 1</span><input name="selectorCampo1" defaultValue={config.selectors?.campo1} /></label>
+        <label className="field"><span>Selector campo 2</span><input name="selectorCampo2" defaultValue={config.selectors?.campo2} /></label>
+        <label className="field"><span>Selector boton</span><input name="selectorButton" defaultValue={config.selectors?.button} /></label>
+        <label className="check"><input name="stopOnFirstSuccess" type="checkbox" defaultChecked={config.stopOnFirstSuccess} /> Detener al primer exito</label>
+        <button className="primary"><Save size={18} /> Guardar</button>
+      </form>
+    </main>
+  );
+}
+
+function Root() {
+  const [mode, setMode] = useState(location.hash === '#admin' ? 'admin' : 'student');
+  useEffect(() => {
+    const onHash = () => setMode(location.hash === '#admin' ? 'admin' : 'student');
+    addEventListener('hashchange', onHash);
+    return () => removeEventListener('hashchange', onHash);
+  }, []);
+  return mode === 'admin' ? <AdminApp /> : <StudentApp />;
+}
+
+createRoot(document.getElementById('root')).render(<Root />);

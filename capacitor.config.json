@@ -1,0 +1,17 @@
+{
+  "appId": "pe.edu.uncp.asistenteestudiantes",
+  "appName": "Asistente de estudiantes",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "path": "capacitor/android"
+  },
+  "plugins": {
+    "Filesystem": {},
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
