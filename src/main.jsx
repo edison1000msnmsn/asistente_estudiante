@@ -229,6 +229,7 @@ function StudentApp({ onSwitchRole }) {
       fireAt: String(fireAtMs),
       maxAttempts: String(config?.config?.maxAttempts || 10),
       intervalMs: String(config?.config?.intervalMs || 100),
+      reloadWindowMs: String(config?.config?.preFireMs || 3000),
       timeoutMs: String(config?.config?.requestTimeoutMs || 15000)
     });
     const nativeUrl = `asistente://official?${params.toString()}`;

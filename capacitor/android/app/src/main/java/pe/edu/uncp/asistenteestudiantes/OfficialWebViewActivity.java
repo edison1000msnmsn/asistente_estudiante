@@ -53,6 +53,7 @@ public class OfficialWebViewActivity extends Activity {
     private long deadlineAt;
     private int maxAttempts;
     private int intervalMs;
+    private long reloadWindowMs;
     private int clickAttempts = 0;
     private int reloadAttempts = 0;
     private long lastPrepareLogAt = 0;
@@ -82,6 +83,7 @@ public class OfficialWebViewActivity extends Activity {
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
         maxAttempts = Math.max(1, (int) parseLong(value(uri, "maxAttempts", "10"), 10));
         intervalMs = Math.max(80, (int) parseLong(value(uri, "intervalMs", "120"), 120));
+        reloadWindowMs = Math.max(0, parseLong(value(uri, "reloadWindowMs", "3000"), 3000));
         long timeoutMs = Math.max(15000, parseLong(value(uri, "timeoutMs", "20000"), 20000));
         deadlineAt = Math.max(System.currentTimeMillis() + timeoutMs, fireAt + timeoutMs);
 
@@ -93,9 +95,11 @@ public class OfficialWebViewActivity extends Activity {
         log("DNI y codigo recibidos.");
         if (fireAt > System.currentTimeMillis() + 500) {
             log("Preparando disparos para " + clock.format(new Date(fireAt)) + ".");
+            log("Ventana configurable: " + reloadWindowMs + " ms antes, intervalo " + intervalMs + " ms, max " + maxAttempts + " intentos.");
             setStatus("PREPARANDO FORMULARIO");
         } else {
             log("Verificacion inmediata.");
+            log("Intervalo " + intervalMs + " ms, max " + maxAttempts + " intentos.");
             setStatus("FORMULARIO EN PROCESO");
         }
 
@@ -274,11 +278,11 @@ public class OfficialWebViewActivity extends Activity {
             }
 
             boolean formReady = dniOk && codeOk && buttonOk;
-            boolean reloadWindow = System.currentTimeMillis() >= fireAt - 3000;
+            boolean reloadWindow = System.currentTimeMillis() >= fireAt - reloadWindowMs;
             boolean shouldReload = !formReady
                     && reloadWindow
-                    && reloadAttempts < Math.max(4, maxAttempts * 2)
-                    && System.currentTimeMillis() - lastReloadAt >= 700;
+                    && reloadAttempts < maxAttempts
+                    && System.currentTimeMillis() - lastReloadAt >= intervalMs;
             if (shouldReload) {
                 reloadAttempts += 1;
                 lastReloadAt = System.currentTimeMillis();
