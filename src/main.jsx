@@ -214,16 +214,22 @@ function StudentApp({ onSwitchRole }) {
 
   function openOfficialWebView(fireAtMs = Date.now()) {
     const selectors = config?.config?.selectors || {};
+    const fallbackCampo1 = '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]';
+    const fallbackCampo2 = '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[id*="codigo"], input[id*="matricula"], input[placeholder*="Codigo"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]';
+    const fallbackButton = '.btn-register, button[type="submit"], button.btn-success, button, input[type="submit"]';
     const params = new URLSearchParams({
       url: config?.config?.targetPage || TARGET_PAGE,
       dni,
       codigo,
       studentId: id,
       apiBase: API_BASE || location.origin,
-      s1: selectors.campo1 || '#dni, input[name="tl_dni"], input[placeholder*="DNI"]',
-      s2: selectors.campo2 || '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]',
-      button: selectors.button || '.btn-register, button[type="submit"], button.btn-success, button',
-      fireAt: String(fireAtMs)
+      s1: [selectors.campo1, fallbackCampo1].filter(Boolean).join(', '),
+      s2: [selectors.campo2, fallbackCampo2].filter(Boolean).join(', '),
+      button: [selectors.button, fallbackButton].filter(Boolean).join(', '),
+      fireAt: String(fireAtMs),
+      maxAttempts: String(config?.config?.maxAttempts || 10),
+      intervalMs: String(config?.config?.intervalMs || 100),
+      timeoutMs: String(config?.config?.requestTimeoutMs || 15000)
     });
     const nativeUrl = `asistente://official?${params.toString()}`;
     if (/capacitor|android/i.test(navigator.userAgent)) {

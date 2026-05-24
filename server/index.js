@@ -40,9 +40,9 @@ const defaultConfig = {
   targetPage: env.targetPage,
   targetMode: env.targetMode,
   selectors: {
-    campo1: 'input[name="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]',
-    campo2: 'input[name="codigo"], input[name="matricula"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]',
-    button: 'button[type="submit"], button, input[type="submit"]'
+    campo1: '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]',
+    campo2: '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[id*="codigo"], input[id*="matricula"], input[placeholder*="Codigo"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]',
+    button: '.btn-register, button[type="submit"], button.btn-success, button, input[type="submit"]'
   }
 };
 
