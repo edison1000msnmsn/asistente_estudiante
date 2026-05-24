@@ -1,12 +1,15 @@
 package pe.edu.uncp.asistenteestudiantes;
 
 import android.app.Activity;
+import android.content.ContentValues;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.webkit.WebChromeClient;
@@ -51,7 +54,9 @@ public class OfficialWebViewActivity extends Activity {
     private int maxAttempts;
     private int intervalMs;
     private int clickAttempts = 0;
+    private int reloadAttempts = 0;
     private long lastPrepareLogAt = 0;
+    private long lastReloadAt = 0;
     private boolean stopped = false;
     private boolean successDetected = false;
     private boolean creditReported = false;
@@ -268,6 +273,21 @@ public class OfficialWebViewActivity extends Activity {
                 lastPrepareLogAt = now;
             }
 
+            boolean formReady = dniOk && codeOk && buttonOk;
+            boolean reloadWindow = System.currentTimeMillis() >= fireAt - 3000;
+            boolean shouldReload = !formReady
+                    && reloadWindow
+                    && reloadAttempts < Math.max(4, maxAttempts * 2)
+                    && System.currentTimeMillis() - lastReloadAt >= 700;
+            if (shouldReload) {
+                reloadAttempts += 1;
+                lastReloadAt = System.currentTimeMillis();
+                setStatus("REFRESCO #" + reloadAttempts);
+                log("Refresco #" + reloadAttempts + ": esperando que aparezca el formulario.");
+                webView.reload();
+                return;
+            }
+
             if (clicked) {
                 clickAttempts += 1;
                 setStatus("DISPARO #" + clickAttempts + " ENVIADO");
@@ -358,14 +378,45 @@ public class OfficialWebViewActivity extends Activity {
             webView.draw(canvas);
             File dir = new File(getFilesDir(), "tickets");
             if (!dir.exists()) dir.mkdirs();
-            File file = new File(dir, "ticket-" + System.currentTimeMillis() + ".png");
+            String fileName = "ticket-" + System.currentTimeMillis() + ".png";
+            File file = new File(dir, fileName);
             FileOutputStream out = new FileOutputStream(file);
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
             out.flush();
             out.close();
-            log("Captura guardada internamente: " + file.getName());
+            boolean publicSaved = savePublicImage(bitmap, fileName);
+            log(publicSaved ? "Captura guardada en Imagenes/AsistenteEstudiantes: " + fileName : "Captura guardada internamente: " + fileName);
         } catch (Exception error) {
             log("No se pudo guardar captura.");
+        }
+    }
+
+    private boolean savePublicImage(Bitmap bitmap, String fileName) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/AsistenteEstudiantes");
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) return false;
+                OutputStream out = getContentResolver().openOutputStream(uri);
+                if (out == null) return false;
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+                out.flush();
+                out.close();
+                return true;
+            }
+            File dir = new File(getExternalFilesDir(null), "AsistenteEstudiantes");
+            if (!dir.exists()) dir.mkdirs();
+            File file = new File(dir, fileName);
+            FileOutputStream out = new FileOutputStream(file);
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            out.flush();
+            out.close();
+            return true;
+        } catch (Exception error) {
+            return false;
         }
     }
 
