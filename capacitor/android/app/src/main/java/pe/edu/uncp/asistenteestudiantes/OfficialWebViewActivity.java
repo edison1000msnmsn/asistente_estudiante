@@ -33,6 +33,7 @@ public class OfficialWebViewActivity extends Activity {
     private String studentId;
     private long fireAt;
     private boolean fired = false;
+    private boolean automationStarted = false;
     private boolean creditReported = false;
 
     @Override
@@ -69,42 +70,58 @@ public class OfficialWebViewActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                scheduleFire();
+                startAutomationLoop();
             }
         });
 
         webView.loadUrl(targetUrl);
     }
 
-    private void scheduleFire() {
-        if (fired) return;
-        long waitMs = Math.max(0, fireAt - System.currentTimeMillis());
-        handler.postDelayed(this::fillAndClick, waitMs);
+    private void startAutomationLoop() {
+        if (automationStarted) return;
+        automationStarted = true;
+        Toast.makeText(this, "Preparando formulario oficial", Toast.LENGTH_SHORT).show();
+        runAutomationTick();
     }
 
-    private void fillAndClick() {
+    private void runAutomationTick() {
         if (fired) return;
-        fired = true;
+        boolean shouldClick = System.currentTimeMillis() >= fireAt;
+        fillAndMaybeClick(shouldClick);
+        if (!shouldClick) {
+            handler.postDelayed(this::runAutomationTick, 250);
+        }
+    }
+
+    private void fillAndMaybeClick(boolean shouldClick) {
         String script = "(function(){"
                 + "function pick(sel,text){var nodes=[].slice.call(document.querySelectorAll(sel));"
                 + "if(!text)return nodes[0];"
                 + "return nodes.find(function(n){return (n.innerText||n.value||'').toUpperCase().indexOf(text)>=0;})||nodes[0];}"
+                + "function pickInput(extra){return pick(extra+', #dni, input[name=\"tl_dni\"], input[id*=\"dni\"], input[placeholder*=\"DNI\"], input[placeholder*=\"Documento\"]');}"
+                + "function pickCode(extra){return pick(extra+', #codigo, #matricula, input[name*=\"codigo\"], input[name*=\"matricula\"], input[id*=\"codigo\"], input[id*=\"matricula\"], input[placeholder*=\"Código\"], input[placeholder*=\"Codigo\"], input[placeholder*=\"Matrícula\"], input[placeholder*=\"Matricula\"]');}"
                 + "function setVal(el,val){if(!el)return false;var p=Object.getPrototypeOf(el);var d=Object.getOwnPropertyDescriptor(p,'value');"
                 + "if(d&&d.set){d.set.call(el,val);}else{el.value=val;}"
-                + "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;}"
-                + "var a=pick(" + JSONObject.quote(selectorCampo1) + ");"
-                + "var b=pick(" + JSONObject.quote(selectorCampo2) + ");"
-                + "setVal(a," + JSONObject.quote(dni) + ");"
-                + "setVal(b," + JSONObject.quote(codigo) + ");"
-                + "setTimeout(function(){var btn=pick(" + JSONObject.quote(selectorButton) + ",'GENERAR');if(btn){btn.click();}},80);"
-                + "return true;"
+                + "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:val}));"
+                + "el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}"
+                + "var a=pickInput(" + JSONObject.quote(selectorCampo1) + ");"
+                + "var b=pickCode(" + JSONObject.quote(selectorCampo2) + ");"
+                + "var ok1=setVal(a," + JSONObject.quote(dni) + ");"
+                + "var ok2=setVal(b," + JSONObject.quote(codigo) + ");"
+                + "var btn=pick(" + JSONObject.quote(selectorButton) + ",'GENERAR')||pick('.btn-register, button[type=\"submit\"], button.btn-success, button','GENERAR');"
+                + "if(" + shouldClick + "&&ok1&&ok2&&btn){btn.removeAttribute('disabled');btn.disabled=false;setTimeout(function(){btn.click();},120);}"
+                + "return JSON.stringify({dni:ok1,codigo:ok2,button:!!btn,clicked:" + shouldClick + "});"
                 + "})();";
-        webView.evaluateJavascript(script, null);
-        Toast.makeText(this, "Datos enviados al formulario oficial", Toast.LENGTH_SHORT).show();
-        handler.postDelayed(this::captureTicket, 5000);
-        handler.postDelayed(this::detectTicketResult, 5500);
-        handler.postDelayed(this::captureTicket, 9000);
-        handler.postDelayed(this::detectTicketResult, 9500);
+        webView.evaluateJavascript(script, value -> {
+            if (shouldClick && !fired) {
+                fired = true;
+                Toast.makeText(this, "Datos pegados y click ejecutado", Toast.LENGTH_SHORT).show();
+                handler.postDelayed(this::captureTicket, 5000);
+                handler.postDelayed(this::detectTicketResult, 5500);
+                handler.postDelayed(this::captureTicket, 9000);
+                handler.postDelayed(this::detectTicketResult, 9500);
+            }
+        });
     }
 
     private void detectTicketResult() {

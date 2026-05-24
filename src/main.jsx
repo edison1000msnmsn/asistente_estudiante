@@ -79,6 +79,7 @@ function StudentApp({ onSwitchRole }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState(JSON.parse(localStorage.getItem('student:history') || '[]'));
+  const [attemptLogs, setAttemptLogs] = useState([]);
 
   const id = useMemo(() => studentId(dni, codigo), [dni, codigo]);
   const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
@@ -106,6 +107,7 @@ function StudentApp({ onSwitchRole }) {
     ]);
     setServerOffset(Number(time.epochMs) - Date.now());
     setConfig(target);
+    return target;
   }
 
   async function checkStatus() {
@@ -138,11 +140,16 @@ function StudentApp({ onSwitchRole }) {
     }
   }
 
-  async function runAttempts() {
+  function addAttemptLog(message) {
+    setAttemptLogs((items) => [{ at: new Date().toLocaleTimeString(), message }, ...items].slice(0, 16));
+  }
+
+  async function runAttempts({ scheduled = false, fireAtMs = Date.now() } = {}) {
     setBusy(true);
     setResult(null);
     try {
       const isWebViewMode = config?.config?.targetMode === 'webview';
+      addAttemptLog(scheduled ? 'Ventana de pre-disparo alcanzada; ejecutando intento controlado.' : 'Verificacion inmediata iniciada.');
       const data = await api('/api/attempts/run', {
         method: 'POST',
         body: JSON.stringify({ dni, codigo, clientId: 'student-app' })
@@ -158,7 +165,7 @@ function StudentApp({ onSwitchRole }) {
       localStorage.setItem('student:history', JSON.stringify(next));
       setResult(data);
       if (isWebViewMode) {
-        openOfficialWebView();
+        openOfficialWebView(scheduled ? fireAtMs : Date.now());
       }
       await checkStatus();
     } catch (error) {
@@ -168,7 +175,44 @@ function StudentApp({ onSwitchRole }) {
     }
   }
 
-  function openOfficialWebView() {
+  async function generateWithPrefire() {
+    setResult(null);
+    setAttemptLogs([]);
+    setBusy(true);
+    try {
+      const freshConfig = await refreshConfig();
+      if (!status?.authorized) {
+        setResult({ ok: false, message: 'Primero verifique que el alumno tenga autorizacion/cupo.' });
+        return;
+      }
+      const cfg = freshConfig?.config;
+      const fireAt = freshConfig?.targetTime ? new Date(freshConfig.targetTime).getTime() : Date.now();
+      const startAt = Math.max(Date.now(), fireAt - Number(cfg?.preFireMs || 3000));
+      const waitMs = startAt - Date.now();
+      addAttemptLog(`Programado para abrir la pagina oficial ${Number(cfg?.preFireMs || 3000)} ms antes.`);
+      addAttemptLog(`Click automatico objetivo: ${new Date(fireAt).toLocaleTimeString()}.`);
+      if (waitMs > 0) {
+        setResult({ ok: true, status: 'scheduled', message: `Esperando ventana de pre-disparo: ${Math.ceil(waitMs / 1000)} s.` });
+        const logTimer = setInterval(() => {
+          const remaining = startAt - Date.now();
+          if (remaining <= 0) {
+            clearInterval(logTimer);
+            return;
+          }
+          addAttemptLog(`Esperando pre-disparo: faltan ${Math.ceil(remaining / 1000)} s para abrir y preparar.`);
+        }, 1000);
+        setTimeout(() => runAttempts({ scheduled: true, fireAtMs: fireAt }), waitMs);
+      } else {
+        await runAttempts({ scheduled: true, fireAtMs: fireAt });
+      }
+    } catch (error) {
+      setResult({ ok: false, message: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openOfficialWebView(fireAtMs = Date.now()) {
     const selectors = config?.config?.selectors || {};
     const params = new URLSearchParams({
       url: config?.config?.targetPage || TARGET_PAGE,
@@ -176,10 +220,10 @@ function StudentApp({ onSwitchRole }) {
       codigo,
       studentId: id,
       apiBase: API_BASE || location.origin,
-      s1: selectors.campo1 || 'input[placeholder*="DNI"]',
-      s2: selectors.campo2 || 'input[placeholder*="Código"]',
-      button: selectors.button || 'button',
-      fireAt: String(Date.now())
+      s1: selectors.campo1 || '#dni, input[name="tl_dni"], input[placeholder*="DNI"]',
+      s2: selectors.campo2 || '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]',
+      button: selectors.button || '.btn-register, button[type="submit"], button.btn-success, button',
+      fireAt: String(fireAtMs)
     });
     const nativeUrl = `asistente://official?${params.toString()}`;
     if (/capacitor|android/i.test(navigator.userAgent)) {
@@ -255,10 +299,16 @@ function StudentApp({ onSwitchRole }) {
             <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
             <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
           </div>
-          <button className="primary" disabled={busy || !status?.authorized} onClick={runAttempts}>
-            <Activity size={18} /> Generar o verificar tiket
+          <button className="primary" disabled={busy || !status?.authorized} onClick={generateWithPrefire}>
+            <Activity size={18} /> Generar con disparos
           </button>
-          {config && <p className="hint">Disponible para generar si aun hay cupos o verificar/recordar un ticket ya emitido en la pagina oficial.</p>}
+          <button disabled={busy || !status?.authorized} onClick={() => runAttempts({ scheduled: false })}>
+            <Ticket size={18} /> Verificar ahora
+          </button>
+          {config && <p className="hint">Generar con disparos abre la pagina antes de la hora, rellena los campos varias veces y hace clic en la hora objetivo. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
+          <div className="attemptLog">
+            {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
+          </div>
         </section>
 
         <section className="panel">

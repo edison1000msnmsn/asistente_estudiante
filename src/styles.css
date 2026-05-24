@@ -196,6 +196,21 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.attemptLog {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: #455c73;
+  font-size: .84rem;
+}
+
+.attemptLog span {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f2f6fa;
+  border: 1px solid #dbe5ef;
+}
+
 .resultBox {
   min-height: 190px;
   max-height: 360px;
