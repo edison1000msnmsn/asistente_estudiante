@@ -26,9 +26,13 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -47,6 +51,7 @@ public class OfficialWebViewActivity extends Activity {
     private String selectorCampo1;
     private String selectorCampo2;
     private String selectorButton;
+    private String directEndpoint;
     private String apiBase;
     private String studentId;
     private long fireAt;
@@ -63,6 +68,9 @@ public class OfficialWebViewActivity extends Activity {
     private boolean creditReported = false;
     private boolean pageLoading = false;
     private int postFireReloads = 0;
+    private int directAttempts = 0;
+    private long lastDirectAt = 0;
+    private boolean directInFlight = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,6 +88,7 @@ public class OfficialWebViewActivity extends Activity {
         selectorCampo1 = value(uri, "s1", "#dni, input[name=\"tl_dni\"], input[id*=\"dni\"], input[placeholder*=\"DNI\"], input[placeholder*=\"Documento\"]");
         selectorCampo2 = value(uri, "s2", "#codigo, #matricula, input[name*=\"codigo\"], input[name*=\"matricula\"], input[name*=\"tl_codigo\"], input[id*=\"codigo\"], input[id*=\"matricula\"], input[placeholder*=\"Codigo\"], input[placeholder*=\"igo\"], input[placeholder*=\"Matricula\"], input[placeholder*=\"atric\"]");
         selectorButton = value(uri, "button", ".btn-register, .btn.btn-success, button[type=\"submit\"], button.btn-success, button[class*=\"register\"], button[class*=\"success\"], button, input[type=\"submit\"]");
+        directEndpoint = value(uri, "directEndpoint", "https://comensales.uncp.edu.pe/api/registros");
         apiBase = value(uri, "apiBase", "");
         studentId = value(uri, "studentId", "");
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
@@ -242,7 +251,103 @@ public class OfficialWebViewActivity extends Activity {
             return;
         }
         boolean shouldClick = now >= fireAt && clickAttempts < maxAttempts;
+        maybeRunDirectAttempt(now);
         fillAndMaybeClick(shouldClick);
+    }
+
+    private void maybeRunDirectAttempt(long now) {
+        if (directEndpoint == null || directEndpoint.isEmpty()) return;
+        if (stopped || successDetected || now < fireAt) return;
+        if (directInFlight || directAttempts >= maxAttempts) return;
+        if (now - lastDirectAt < Math.max(120, intervalMs)) return;
+
+        directAttempts += 1;
+        int attemptNo = directAttempts;
+        lastDirectAt = now;
+        directInFlight = true;
+        setStatus("API DIRECTA #" + attemptNo);
+        log("API directa #" + attemptNo + ": enviando registro oficial.");
+
+        new Thread(() -> {
+            DirectAttemptResult result = postOfficialRegistration();
+            handler.post(() -> handleDirectAttemptResult(attemptNo, result));
+        }).start();
+    }
+
+    private DirectAttemptResult postOfficialRegistration() {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(directEndpoint);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            int apiTimeout = Math.max(1200, Math.min(5000, intervalMs * 5));
+            connection.setConnectTimeout(apiTimeout);
+            connection.setReadTimeout(apiTimeout);
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+            connection.setRequestProperty("Accept", "application/json, text/plain, */*");
+            connection.setDoOutput(true);
+
+            JSONObject payload = new JSONObject();
+            payload.put("t1_dni", dni);
+            payload.put("t1_codigo", codigo);
+            String body = "data=" + URLEncoder.encode(payload.toString(), "UTF-8");
+            OutputStream out = connection.getOutputStream();
+            out.write(body.getBytes("UTF-8"));
+            out.flush();
+            out.close();
+
+            int httpCode = connection.getResponseCode();
+            InputStream input = httpCode >= 200 && httpCode < 400 ? connection.getInputStream() : connection.getErrorStream();
+            String text = readStream(input);
+            int officialCode = -1;
+            try {
+                JSONObject json = new JSONObject(text);
+                officialCode = json.optInt("code", -1);
+            } catch (Exception ignored) {
+            }
+            return new DirectAttemptResult(httpCode, officialCode, text, null);
+        } catch (Exception error) {
+            return new DirectAttemptResult(0, -1, "", error.getMessage());
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void handleDirectAttemptResult(int attemptNo, DirectAttemptResult result) {
+        directInFlight = false;
+        if (stopped || successDetected) return;
+
+        if (result.error != null) {
+            log("API directa #" + attemptNo + ": sin respuesta rapida (" + result.error + ").");
+            return;
+        }
+
+        log("API directa #" + attemptNo + ": HTTP " + result.httpCode + ", code " + result.officialCode + ".");
+        if (result.officialCode == 200 || result.officialCode == 201) {
+            successDetected = true;
+            setStatus("REGISTRADO EXITOSAMENTE");
+            log("API directa confirmo ticket generado por la web oficial.");
+            renderDirectTicket(result.body);
+            reportCreditUse();
+        } else if (result.officialCode == 300) {
+            setStatus("FUERA DE HORARIO");
+            log("API oficial indica fuera de horario; se seguira intentando dentro de la ventana.");
+        } else if (result.officialCode == 400) {
+            stopped = true;
+            setStatus("ACCESO RESTRINGIDO");
+            log("API oficial indica alumno restringido.");
+            captureTicket();
+        } else if (result.officialCode == 404) {
+            stopped = true;
+            setStatus("NO ENCONTRADO");
+            log("API oficial indica DNI/codigo no encontrado.");
+            captureTicket();
+        } else if (result.officialCode == 500) {
+            stopped = true;
+            setStatus("CUPOS AGOTADOS");
+            log("API oficial indica cupos agotados.");
+            captureTicket();
+        }
     }
 
     private void fillAndMaybeClick(boolean shouldClick) {
@@ -420,6 +525,47 @@ public class OfficialWebViewActivity extends Activity {
         }).start();
     }
 
+    private void renderDirectTicket(String body) {
+        try {
+            JSONObject ticket = new JSONObject(body);
+            String ticketId = ticket.optString("t2_id", ticket.optString("id", ""));
+            String ticketCode = ticket.optString("t2_codigo", ticket.optString("codigo", ""));
+            String ticketDni = ticket.optString("t1_dni", dni);
+            String ticketStudentCode = ticket.optString("t1_codigo", codigo);
+            String names = ticket.optString("t1_nombres", "");
+            String career = ticket.optString("t1_escuela", "");
+            String title = ticketId.isEmpty() ? "TICKET VIRTUAL" : "TICKET VIRTUAL #" + escapeHtml(ticketId);
+            String html = "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                    + "<style>body{margin:0;background:#1f4c8f;font-family:Arial,sans-serif;color:#1f2937}.card{margin:18px auto;max-width:620px;background:#f8fafc;border-radius:18px;overflow:hidden;border:3px solid #1fbf75}.head{background:linear-gradient(135deg,#22b455,#21c8a4);color:#fff;text-align:center;padding:28px 18px}.head h1{margin:0;font-size:28px}.notice{display:inline-block;margin-top:12px;background:#ffffff33;padding:8px 16px;border-radius:20px}.body{padding:24px}.barcode{background:white;border-radius:12px;padding:22px;margin:0 auto 24px;text-align:center;box-shadow:0 6px 18px #0002;font-size:22px;letter-spacing:3px}.row{background:white;border-left:5px solid #22b455;margin:12px 0;padding:14px;border-radius:10px}.label{font-weight:700;color:#64748b;font-size:13px;text-transform:uppercase}.value{font-size:18px;margin-top:8px}.ok{background:#d8f3e6;border-radius:10px;padding:18px;margin-top:22px}.ok strong{color:#0f5132}</style></head><body>"
+                    + "<div class=\"card\"><div class=\"head\"><h1>" + title + "</h1><div class=\"notice\">No compartas este codigo con nadie</div></div>"
+                    + "<div class=\"body\"><div class=\"barcode\">" + escapeHtml(ticketCode.isEmpty() ? ticketId : ticketCode) + "</div>"
+                    + ticketRow("DNI", ticketDni)
+                    + ticketRow("Codigo", ticketStudentCode)
+                    + ticketRow("Nombres y Apellidos", names)
+                    + ticketRow("Carrera Profesional", career)
+                    + "<div class=\"ok\"><strong>Ticket generado exitosamente.</strong><br>Guarda esta captura y presentala con tu documento al ingresar.</div>"
+                    + "</div></div></body></html>";
+            webView.loadDataWithBaseURL("https://comedor.uncp.edu.pe/", html, "text/html", "UTF-8", null);
+            handler.postDelayed(this::captureTicket, 900);
+        } catch (Exception error) {
+            log("Ticket confirmado, pero no se pudo renderizar comprobante local.");
+            captureTicket();
+        }
+    }
+
+    private String ticketRow(String label, String value) {
+        return "<div class=\"row\"><div class=\"label\">" + escapeHtml(label) + "</div><div class=\"value\">" + escapeHtml(value) + "</div></div>";
+    }
+
+    private String escapeHtml(String value) {
+        return String.valueOf(value == null ? "" : value)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
     private void captureTicket() {
         try {
             Bitmap bitmap = Bitmap.createBitmap(webView.getWidth(), webView.getHeight(), Bitmap.Config.ARGB_8888);
@@ -487,6 +633,32 @@ public class OfficialWebViewActivity extends Activity {
                 .replace("\\\"", "\"")
                 .replace("\"", "")
                 .replace("\\\\", "\\");
+    }
+
+    private String readStream(InputStream input) throws Exception {
+        if (input == null) return "";
+        BufferedReader reader = new BufferedReader(new InputStreamReader(input, "UTF-8"));
+        StringBuilder builder = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            builder.append(line).append('\n');
+        }
+        reader.close();
+        return builder.toString();
+    }
+
+    private static class DirectAttemptResult {
+        final int httpCode;
+        final int officialCode;
+        final String body;
+        final String error;
+
+        DirectAttemptResult(int httpCode, int officialCode, String body, String error) {
+            this.httpCode = httpCode;
+            this.officialCode = officialCode;
+            this.body = body == null ? "" : body;
+            this.error = error;
+        }
     }
 
     @Override

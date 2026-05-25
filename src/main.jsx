@@ -226,8 +226,12 @@ function StudentApp({ onSwitchRole }) {
     const fallbackCampo1 = '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]';
     const fallbackCampo2 = '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[id*="codigo"], input[id*="matricula"], input[placeholder*="Codigo"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]';
     const fallbackButton = '.btn-register, button[type="submit"], button.btn-success, button, input[type="submit"]';
+    const directEndpoint = activeConfig.targetEndpoint?.includes('/api/')
+      ? activeConfig.targetEndpoint
+      : 'https://comensales.uncp.edu.pe/api/registros';
     const params = new URLSearchParams({
       url: activeConfig.targetPage || TARGET_PAGE,
+      directEndpoint,
       dni,
       codigo,
       studentId: id,
@@ -321,7 +325,7 @@ function StudentApp({ onSwitchRole }) {
           <button disabled={busy || !status?.authorized} onClick={() => runAttempts({ scheduled: false })}>
             <Ticket size={18} /> Verificar ahora
           </button>
-          {config && <p className="hint">Generar con disparos abre la pagina oficial de inmediato, la deja precargada, refresca solo en la ventana configurada y hace clic en la hora objetivo. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
+          {config && <p className="hint">Generar con disparos abre la pagina oficial de inmediato, dispara primero la API oficial de registro, y usa la WebView como respaldo/comprobante. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
           <div className="attemptLog">
             {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
           </div>
