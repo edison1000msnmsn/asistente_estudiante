@@ -71,6 +71,7 @@ public class OfficialWebViewActivity extends Activity {
     private int directAttempts = 0;
     private long lastDirectAt = 0;
     private boolean directInFlight = false;
+    private boolean immediateMode = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -91,6 +92,7 @@ public class OfficialWebViewActivity extends Activity {
         directEndpoint = value(uri, "directEndpoint", "https://comensales.uncp.edu.pe/api/registros");
         apiBase = value(uri, "apiBase", "");
         studentId = value(uri, "studentId", "");
+        immediateMode = "immediate".equalsIgnoreCase(value(uri, "mode", "prefire"));
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
         maxAttempts = Math.max(1, (int) parseLong(value(uri, "maxAttempts", "10"), 10));
         intervalMs = Math.max(80, (int) parseLong(value(uri, "intervalMs", "120"), 120));
@@ -104,7 +106,7 @@ public class OfficialWebViewActivity extends Activity {
         log("[App iniciada]");
         log("Inicializando sesion...");
         log("DNI y codigo recibidos.");
-        if (fireAt > System.currentTimeMillis() + 500) {
+        if (!immediateMode && fireAt > System.currentTimeMillis() + 500) {
             log("Preparando disparos para " + clock.format(new Date(fireAt)) + ".");
             log("Ventana configurable: " + reloadWindowMs + " ms antes, intervalo " + intervalMs + " ms, max " + maxAttempts + " intentos.");
             setStatus("PREPARANDO FORMULARIO");
@@ -331,22 +333,28 @@ public class OfficialWebViewActivity extends Activity {
             reportCreditUse();
         } else if (result.officialCode == 300) {
             setStatus("FUERA DE HORARIO");
-            log("API oficial indica fuera de horario; se seguira intentando dentro de la ventana.");
+            log("API oficial indica fuera de horario.");
+            if (immediateMode) {
+                stopped = true;
+                renderOfficialStatus("Fuera de Horario", "La plataforma oficial no esta habilitada para generar ticket en este momento.", "ACCESO RESTRINGIDO");
+            } else {
+                log("Se seguira intentando dentro de la ventana.");
+            }
         } else if (result.officialCode == 400) {
             stopped = true;
             setStatus("ACCESO RESTRINGIDO");
             log("API oficial indica alumno restringido.");
-            captureTicket();
+            renderOfficialStatus("Acceso Restringido", "El sistema oficial indica que este alumno esta restringido para el servicio.", "USUARIO RESTRINGIDO");
         } else if (result.officialCode == 404) {
             stopped = true;
             setStatus("NO ENCONTRADO");
             log("API oficial indica DNI/codigo no encontrado.");
-            captureTicket();
+            renderOfficialStatus("Usuario No Encontrado", "El DNI/codigo no se encuentra en la lista de matriculados para este periodo academico.", "NO MATRICULADO");
         } else if (result.officialCode == 500) {
             stopped = true;
             setStatus("CUPOS AGOTADOS");
             log("API oficial indica cupos agotados.");
-            captureTicket();
+            renderOfficialStatus("Cupos Agotados", "El numero de cupos habilitados para hoy se ha agotado. Intente manana a partir de las 07:00 AM.", "SIN CUPOS DISPONIBLES");
         }
     }
 
@@ -523,6 +531,17 @@ public class OfficialWebViewActivity extends Activity {
                 handler.post(() -> log("No se pudo conectar al backend para descontar cupo."));
             }
         }).start();
+    }
+
+    private void renderOfficialStatus(String title, String message, String actionLabel) {
+        String html = "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                + "<style>body{margin:0;background:#1f4c8f;font-family:Arial,sans-serif;color:#1f2937}.card{margin:28px auto;max-width:620px;background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 14px 30px #0003}.head{background:#f5b400;color:#172033;padding:24px;text-align:left}.head h1{margin:0;font-size:28px}.body{padding:32px;text-align:center}.icon{font-size:42px;margin-bottom:14px}.title{font-size:24px;font-weight:800;margin-bottom:12px}.msg{font-size:17px;line-height:1.5;color:#4b5563}.pill{margin-top:24px;display:inline-block;background:#eef2f7;border-radius:10px;padding:14px 18px;font-weight:800;color:#334155}</style></head><body>"
+                + "<div class=\"card\"><div class=\"head\"><h1>Informacion del Registro</h1></div>"
+                + "<div class=\"body\"><div class=\"icon\">!</div><div class=\"title\">" + escapeHtml(title) + "</div>"
+                + "<div class=\"msg\">" + escapeHtml(message) + "</div><div class=\"pill\">" + escapeHtml(actionLabel) + "</div></div></div>"
+                + "</body></html>";
+        webView.loadDataWithBaseURL("https://comedor.uncp.edu.pe/", html, "text/html", "UTF-8", null);
+        handler.postDelayed(this::captureTicket, 900);
     }
 
     private void renderDirectTicket(String body) {

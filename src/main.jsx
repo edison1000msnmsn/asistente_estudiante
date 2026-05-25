@@ -56,6 +56,17 @@ function formatCountdown(ms) {
   return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}.${String(milli).padStart(3, '0')}`;
 }
 
+function resolveGenerateFireAt(freshConfig) {
+  const localNow = Date.now();
+  const serverNow = freshConfig?.serverTime ? new Date(freshConfig.serverTime).getTime() : localNow;
+  const serverTarget = freshConfig?.targetTime ? new Date(freshConfig.targetTime).getTime() : localNow;
+  const delta = serverTarget - serverNow;
+  if (Number.isFinite(delta) && delta > 0 && delta <= 12 * 60 * 60 * 1000) {
+    return { fireAt: localNow + delta, immediate: false };
+  }
+  return { fireAt: localNow, immediate: true };
+}
+
 function Field({ label, value, onChange, type = 'text', placeholder }) {
   return (
     <label className="field">
@@ -165,7 +176,7 @@ function StudentApp({ onSwitchRole }) {
       localStorage.setItem('student:history', JSON.stringify(next));
       setResult(data);
       if (isWebViewMode) {
-        openOfficialWebView(scheduled ? fireAtMs : Date.now());
+        openOfficialWebView(scheduled ? fireAtMs : Date.now(), undefined, { mode: scheduled ? 'prefire' : 'immediate' });
       }
       await checkStatus();
     } catch (error) {
@@ -186,13 +197,18 @@ function StudentApp({ onSwitchRole }) {
         return;
       }
       const cfg = freshConfig?.config;
-      const fireAt = freshConfig?.targetTime ? new Date(freshConfig.targetTime).getTime() : Date.now();
+      const firePlan = resolveGenerateFireAt(freshConfig);
+      const fireAt = firePlan.fireAt;
       if (cfg?.targetMode === 'webview') {
         addAttemptLog('Abriendo la web oficial ahora para dejarla precargada.');
-        addAttemptLog(`Los refrescos controlados empezaran ${Number(cfg?.preFireMs || 3000)} ms antes de la hora.`);
-        addAttemptLog(`Click automatico objetivo: ${new Date(fireAt).toLocaleTimeString()}.`);
-        setResult({ ok: true, status: 'armed', message: 'Web oficial abierta y preparada para disparar en la hora objetivo.' });
-        openOfficialWebView(fireAt, cfg);
+        if (firePlan.immediate) {
+          addAttemptLog('La hora objetivo de hoy ya paso; se ejecuta la API oficial inmediatamente.');
+        } else {
+          addAttemptLog(`Los refrescos controlados empezaran ${Number(cfg?.preFireMs || 3000)} ms antes de la hora.`);
+          addAttemptLog(`Click/API objetivo: ${new Date(fireAt).toLocaleTimeString()}.`);
+        }
+        setResult({ ok: true, status: firePlan.immediate ? 'immediate' : 'armed', message: firePlan.immediate ? 'Ejecutando verificacion/generacion inmediata.' : 'Web oficial abierta y preparada para disparar en la hora objetivo.' });
+        openOfficialWebView(fireAt, cfg, { mode: firePlan.immediate ? 'immediate' : 'prefire' });
         return;
       }
       const startAt = Math.max(Date.now(), fireAt - Number(cfg?.preFireMs || 3000));
@@ -220,7 +236,7 @@ function StudentApp({ onSwitchRole }) {
     }
   }
 
-  function openOfficialWebView(fireAtMs = Date.now(), configOverride = config?.config) {
+  function openOfficialWebView(fireAtMs = Date.now(), configOverride = config?.config, options = {}) {
     const activeConfig = configOverride || {};
     const selectors = activeConfig.selectors || {};
     const fallbackCampo1 = '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]';
@@ -239,6 +255,7 @@ function StudentApp({ onSwitchRole }) {
       s1: [selectors.campo1, fallbackCampo1].filter(Boolean).join(', '),
       s2: [selectors.campo2, fallbackCampo2].filter(Boolean).join(', '),
       button: [selectors.button, fallbackButton].filter(Boolean).join(', '),
+      mode: options.mode || 'immediate',
       fireAt: String(fireAtMs),
       maxAttempts: String(activeConfig.maxAttempts || 10),
       intervalMs: String(activeConfig.intervalMs || 100),
