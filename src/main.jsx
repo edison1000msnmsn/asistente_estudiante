@@ -187,6 +187,14 @@ function StudentApp({ onSwitchRole }) {
       }
       const cfg = freshConfig?.config;
       const fireAt = freshConfig?.targetTime ? new Date(freshConfig.targetTime).getTime() : Date.now();
+      if (cfg?.targetMode === 'webview') {
+        addAttemptLog('Abriendo la web oficial ahora para dejarla precargada.');
+        addAttemptLog(`Los refrescos controlados empezaran ${Number(cfg?.preFireMs || 3000)} ms antes de la hora.`);
+        addAttemptLog(`Click automatico objetivo: ${new Date(fireAt).toLocaleTimeString()}.`);
+        setResult({ ok: true, status: 'armed', message: 'Web oficial abierta y preparada para disparar en la hora objetivo.' });
+        openOfficialWebView(fireAt, cfg);
+        return;
+      }
       const startAt = Math.max(Date.now(), fireAt - Number(cfg?.preFireMs || 3000));
       const waitMs = startAt - Date.now();
       addAttemptLog(`Programado para abrir la pagina oficial ${Number(cfg?.preFireMs || 3000)} ms antes.`);
@@ -212,13 +220,14 @@ function StudentApp({ onSwitchRole }) {
     }
   }
 
-  function openOfficialWebView(fireAtMs = Date.now()) {
-    const selectors = config?.config?.selectors || {};
+  function openOfficialWebView(fireAtMs = Date.now(), configOverride = config?.config) {
+    const activeConfig = configOverride || {};
+    const selectors = activeConfig.selectors || {};
     const fallbackCampo1 = '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]';
     const fallbackCampo2 = '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[id*="codigo"], input[id*="matricula"], input[placeholder*="Codigo"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]';
     const fallbackButton = '.btn-register, button[type="submit"], button.btn-success, button, input[type="submit"]';
     const params = new URLSearchParams({
-      url: config?.config?.targetPage || TARGET_PAGE,
+      url: activeConfig.targetPage || TARGET_PAGE,
       dni,
       codigo,
       studentId: id,
@@ -227,17 +236,17 @@ function StudentApp({ onSwitchRole }) {
       s2: [selectors.campo2, fallbackCampo2].filter(Boolean).join(', '),
       button: [selectors.button, fallbackButton].filter(Boolean).join(', '),
       fireAt: String(fireAtMs),
-      maxAttempts: String(config?.config?.maxAttempts || 10),
-      intervalMs: String(config?.config?.intervalMs || 100),
-      reloadWindowMs: String(config?.config?.preFireMs || 3000),
-      timeoutMs: String(config?.config?.requestTimeoutMs || 15000)
+      maxAttempts: String(activeConfig.maxAttempts || 10),
+      intervalMs: String(activeConfig.intervalMs || 100),
+      reloadWindowMs: String(activeConfig.preFireMs || 3000),
+      timeoutMs: String(activeConfig.requestTimeoutMs || 15000)
     });
     const nativeUrl = `asistente://official?${params.toString()}`;
     if (/capacitor|android/i.test(navigator.userAgent)) {
       window.location.href = nativeUrl;
       return;
     }
-    window.open(config?.config?.targetPage || TARGET_PAGE, '_blank', 'noopener,noreferrer');
+    window.open(activeConfig.targetPage || TARGET_PAGE, '_blank', 'noopener,noreferrer');
   }
 
   function saveReceipt() {
@@ -312,7 +321,7 @@ function StudentApp({ onSwitchRole }) {
           <button disabled={busy || !status?.authorized} onClick={() => runAttempts({ scheduled: false })}>
             <Ticket size={18} /> Verificar ahora
           </button>
-          {config && <p className="hint">Generar con disparos abre la pagina antes de la hora, rellena los campos varias veces y hace clic en la hora objetivo. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
+          {config && <p className="hint">Generar con disparos abre la pagina oficial de inmediato, la deja precargada, refresca solo en la ventana configurada y hace clic en la hora objetivo. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
           <div className="attemptLog">
             {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
           </div>

@@ -61,6 +61,8 @@ public class OfficialWebViewActivity extends Activity {
     private boolean stopped = false;
     private boolean successDetected = false;
     private boolean creditReported = false;
+    private boolean pageLoading = false;
+    private int postFireReloads = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,16 +77,16 @@ public class OfficialWebViewActivity extends Activity {
         String targetUrl = value(uri, "url", "https://comedor.uncp.edu.pe/charola");
         dni = value(uri, "dni", "");
         codigo = value(uri, "codigo", "");
-        selectorCampo1 = value(uri, "s1", "#dni, input[name=\"tl_dni\"], input[id*=\"dni\"], input[placeholder*=\"DNI\"]");
-        selectorCampo2 = value(uri, "s2", "#codigo, #matricula, input[name*=\"codigo\"], input[name*=\"matricula\"], input[id*=\"codigo\"], input[id*=\"matricula\"]");
-        selectorButton = value(uri, "button", ".btn-register, button[type=\"submit\"], button.btn-success, button");
+        selectorCampo1 = value(uri, "s1", "#dni, input[name=\"tl_dni\"], input[id*=\"dni\"], input[placeholder*=\"DNI\"], input[placeholder*=\"Documento\"]");
+        selectorCampo2 = value(uri, "s2", "#codigo, #matricula, input[name*=\"codigo\"], input[name*=\"matricula\"], input[name*=\"tl_codigo\"], input[id*=\"codigo\"], input[id*=\"matricula\"], input[placeholder*=\"Codigo\"], input[placeholder*=\"igo\"], input[placeholder*=\"Matricula\"], input[placeholder*=\"atric\"]");
+        selectorButton = value(uri, "button", ".btn-register, .btn.btn-success, button[type=\"submit\"], button.btn-success, button[class*=\"register\"], button[class*=\"success\"], button, input[type=\"submit\"]");
         apiBase = value(uri, "apiBase", "");
         studentId = value(uri, "studentId", "");
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
         maxAttempts = Math.max(1, (int) parseLong(value(uri, "maxAttempts", "10"), 10));
         intervalMs = Math.max(80, (int) parseLong(value(uri, "intervalMs", "120"), 120));
         reloadWindowMs = Math.max(0, parseLong(value(uri, "reloadWindowMs", "3000"), 3000));
-        long timeoutMs = Math.max(15000, parseLong(value(uri, "timeoutMs", "20000"), 20000));
+        long timeoutMs = Math.max(90000, parseLong(value(uri, "timeoutMs", "120000"), 120000));
         deadlineAt = Math.max(System.currentTimeMillis() + timeoutMs, fireAt + timeoutMs);
 
         buildLayout();
@@ -104,6 +106,7 @@ public class OfficialWebViewActivity extends Activity {
         }
 
         webView.loadUrl(targetUrl);
+        handler.postDelayed(this::runAutomationTick, 350);
     }
 
     private void buildLayout() {
@@ -216,9 +219,15 @@ public class OfficialWebViewActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                pageLoading = true;
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                pageLoading = false;
                 log("Pagina oficial cargada.");
-                runAutomationTick();
+                handler.postDelayed(OfficialWebViewActivity.this::runAutomationTick, 80);
             }
         });
     }
@@ -228,7 +237,7 @@ public class OfficialWebViewActivity extends Activity {
         long now = System.currentTimeMillis();
         if (now > deadlineAt) {
             setStatus("SIN CONFIRMACION");
-            log("Tiempo agotado: no se confirmo ticket ni mensaje de cierre.");
+            log("Tiempo agotado: no se confirmo ticket ni mensaje de cierre tras la ventana extendida.");
             captureTicket();
             return;
         }
@@ -238,31 +247,46 @@ public class OfficialWebViewActivity extends Activity {
 
     private void fillAndMaybeClick(boolean shouldClick) {
         String script = "(function(){"
-                + "function visible(el){if(!el)return false;var r=el.getBoundingClientRect();var s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';}"
+                + "var targetDni=" + JSONObject.quote(dni) + ";"
+                + "var targetCode=" + JSONObject.quote(codigo) + ";"
+                + "function visible(el){if(!el)return false;var r=el.getBoundingClientRect();var s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'&&(el.type||'').toLowerCase()!=='hidden';}"
                 + "function q(sel){try{return Array.prototype.slice.call(document.querySelectorAll(sel)).filter(visible);}catch(e){return [];}}"
                 + "function text(el){return ((el.innerText||el.value||el.getAttribute('aria-label')||'')+'').toUpperCase();}"
-                + "function meta(el){return ((el.id||'')+' '+(el.name||'')+' '+(el.placeholder||'')+' '+(el.getAttribute('aria-label')||'')).toLowerCase();}"
-                + "function dniLike(el){return /dni|documento/.test(meta(el));}"
-                + "function codeLike(el){return /codigo|codig|matricula|matricul|c\\u00f3digo|matr\\u00edcula/.test(meta(el));}"
-                + "var inputs=q('input').filter(function(el){var t=(el.type||'text').toLowerCase();return ['text','tel','number','search',''].indexOf(t)>=0;});"
+                + "function meta(el){return ((el.id||'')+' '+(el.name||'')+' '+(el.placeholder||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.className||'')).toLowerCase();}"
+                + "function dniLike(el){return /dni|documento|identity/.test(meta(el));}"
+                + "function codeLike(el){return /codigo|codig|matricula|matricul|c\\u00f3digo|matr\\u00edcula|code/.test(meta(el));}"
+                + "var inputs=q('input,textarea').filter(function(el){var t=(el.type||'text').toLowerCase();return ['text','tel','number','search',''].indexOf(t)>=0;});"
                 + "function first(list){return list.length?list[0]:null;}"
                 + "var dniInput=first(q(" + JSONObject.quote(selectorCampo1) + "))||inputs.find(dniLike)||inputs[0]||null;"
                 + "var codeInput=first(q(" + JSONObject.quote(selectorCampo2) + ").filter(function(el){return el!==dniInput;}))||inputs.find(function(el){return el!==dniInput&&codeLike(el);})||inputs.find(function(el){return el!==dniInput;})||null;"
-                + "function setVal(el,val){if(!el)return false;el.focus();try{Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(el,val);}catch(e){el.value=val;}"
-                + "try{el.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:true,inputType:'insertText',data:val}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));}"
-                + "['change','keyup','keydown','blur'].forEach(function(name){try{el.dispatchEvent(new Event(name,{bubbles:true,cancelable:true}));}catch(e){}});return el.value==val;}"
-                + "var okDni=setVal(dniInput," + JSONObject.quote(dni) + ");"
-                + "var okCode=setVal(codeInput," + JSONObject.quote(codigo) + ");"
+                + "function setVal(el,val){if(!el)return false;try{el.removeAttribute('readonly');el.removeAttribute('disabled');el.readOnly=false;el.disabled=false;}catch(e){}"
+                + "try{el.focus();}catch(e){}"
+                + "var desc=null;try{desc=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el),'value')||Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');}catch(e){}"
+                + "try{if(el._valueTracker)el._valueTracker.setValue('');}catch(e){}"
+                + "try{if(desc&&desc.set){desc.set.call(el,'');desc.set.call(el,val);}else{el.value='';el.value=val;}}catch(e){el.value='';el.value=val;}"
+                + "try{el.setAttribute('value',val);}catch(e){}"
+                + "try{el.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:true,inputType:'insertText',data:val}));}catch(e){try{el.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));}catch(x){}}"
+                + "['change','keyup','keydown','blur'].forEach(function(name){try{el.dispatchEvent(new Event(name,{bubbles:true,cancelable:true}));}catch(e){}});"
+                + "return String(el.value||'').toLowerCase()===String(val).toLowerCase();}"
+                + "var foundDni=!!dniInput;"
+                + "var foundCode=!!codeInput;"
+                + "var okDni=setVal(dniInput,targetDni);"
+                + "var okCode=setVal(codeInput,targetCode);"
                 + "var buttons=q(" + JSONObject.quote(selectorButton) + ").concat(q('button,input[type=\"submit\"],[role=\"button\"]'));"
+                + "buttons=buttons.filter(function(el,i,arr){return arr.indexOf(el)===i;});"
                 + "var btn=buttons.find(function(el){return /GENERAR|TICKET|REGISTRO|INICIAR/.test(text(el));})||buttons[0]||null;"
+                + "var foundButton=!!btn;"
                 + "var clicked=false;"
-                + "if(" + shouldClick + "&&okDni&&okCode&&btn){try{btn.scrollIntoView({block:'center'});}catch(e){} btn.removeAttribute('disabled');btn.disabled=false;"
-                + "['pointerdown','mousedown','mouseup','click'].forEach(function(name){try{btn.dispatchEvent(new MouseEvent(name,{bubbles:true,cancelable:true,view:window}));}catch(e){}});clicked=true;}"
-                + "return 'dni='+(okDni?1:0)+';codigo='+(okCode?1:0)+';button='+(btn?1:0)+';clicked='+(clicked?1:0)+';disabled='+(btn&&btn.disabled?1:0);"
+                + "if(" + shouldClick + "&&foundDni&&foundCode){if(btn){try{btn.scrollIntoView({block:'center'});}catch(e){} try{btn.removeAttribute('disabled');btn.disabled=false;btn.classList.remove('disabled');}catch(e){}"
+                + "['touchstart','pointerdown','mousedown','mouseup','click'].forEach(function(name){try{btn.dispatchEvent(new MouseEvent(name,{bubbles:true,cancelable:true,view:window}));}catch(e){}});clicked=true;}"
+                + "if(!clicked){var form=(dniInput&&dniInput.form)||(codeInput&&codeInput.form)||document.querySelector('form');if(form){try{form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}catch(e){} try{if(form.requestSubmit)form.requestSubmit();}catch(e){} clicked=true;}}}"
+                + "return 'foundDni='+(foundDni?1:0)+';foundCode='+(foundCode?1:0)+';dni='+(okDni?1:0)+';codigo='+(okCode?1:0)+';button='+(foundButton?1:0)+';clicked='+(clicked?1:0)+';disabled='+(btn&&btn.disabled?1:0);"
                 + "})();";
 
         webView.evaluateJavascript(script, value -> {
             String result = cleanEval(value);
+            boolean foundDni = result.contains("foundDni=1");
+            boolean foundCode = result.contains("foundCode=1");
             boolean dniOk = result.contains("dni=1");
             boolean codeOk = result.contains("codigo=1");
             boolean buttonOk = result.contains("button=1");
@@ -272,22 +296,43 @@ public class OfficialWebViewActivity extends Activity {
             if (dniOk && codeOk && buttonOk && now - lastPrepareLogAt > 1200) {
                 log("Formulario detectado: DNI, codigo y boton listos.");
                 lastPrepareLogAt = now;
+            } else if (foundDni && foundCode && now - lastPrepareLogAt > 1200) {
+                log("Campos encontrados; reintentando escritura y activacion del boton.");
+                lastPrepareLogAt = now;
             } else if (now - lastPrepareLogAt > 1800) {
-                log("Buscando campos... dni=" + dniOk + " codigo=" + codeOk + " boton=" + buttonOk);
+                log("Buscando campos... dni=" + foundDni + "/" + dniOk + " codigo=" + foundCode + "/" + codeOk + " boton=" + buttonOk);
                 lastPrepareLogAt = now;
             }
 
-            boolean formReady = dniOk && codeOk && buttonOk;
-            boolean reloadWindow = System.currentTimeMillis() >= fireAt - reloadWindowMs;
-            boolean shouldReload = !formReady
+            boolean formVisible = foundDni && foundCode;
+            boolean beforeFire = now < fireAt;
+            boolean reloadWindow = now >= fireAt - reloadWindowMs;
+            boolean beforeFireReload = !formVisible
+                    && beforeFire
                     && reloadWindow
+                    && !pageLoading
                     && reloadAttempts < maxAttempts
-                    && System.currentTimeMillis() - lastReloadAt >= intervalMs;
+                    && now - lastReloadAt >= intervalMs;
+            boolean openingReload = !formVisible
+                    && !beforeFire
+                    && !pageLoading
+                    && reloadAttempts < maxAttempts
+                    && lastReloadAt < fireAt
+                    && now - lastReloadAt >= Math.max(250, intervalMs);
+            boolean recoveryReload = !formVisible
+                    && !beforeFire
+                    && !pageLoading
+                    && postFireReloads < 3
+                    && reloadAttempts < maxAttempts
+                    && now - fireAt > 2500
+                    && now - lastReloadAt >= Math.max(1500, intervalMs * 4L);
+            boolean shouldReload = beforeFireReload || openingReload || recoveryReload;
             if (shouldReload) {
                 reloadAttempts += 1;
+                if (!beforeFire) postFireReloads += 1;
                 lastReloadAt = System.currentTimeMillis();
                 setStatus("REFRESCO #" + reloadAttempts);
-                log("Refresco #" + reloadAttempts + ": esperando que aparezca el formulario.");
+                log((beforeFire ? "Refresco previo #" : "Refresco de apertura #") + reloadAttempts + ": esperando formulario.");
                 webView.reload();
                 return;
             }
@@ -300,10 +345,9 @@ public class OfficialWebViewActivity extends Activity {
             }
 
             if (!stopped && !successDetected) {
-                boolean beforeFire = System.currentTimeMillis() < fireAt;
                 boolean canContinue = beforeFire || clickAttempts < maxAttempts;
                 if (canContinue && System.currentTimeMillis() <= deadlineAt) {
-                    handler.postDelayed(this::runAutomationTick, beforeFire ? 250 : intervalMs);
+                    handler.postDelayed(this::runAutomationTick, beforeFire ? 250 : Math.max(120, intervalMs));
                 } else {
                     setStatus("ESPERANDO RESPUESTA");
                     log("Intentos completados; esperando resultado visible.");
@@ -327,6 +371,7 @@ public class OfficialWebViewActivity extends Activity {
             boolean closed = text.contains("CUPOS AGOTADOS")
                     || text.contains("NO HAY CUPO")
                     || text.contains("NO HAY TICKET")
+                    || text.contains("0 CUPOS DISPONIBLES")
                     || (text.contains("REGISTRO") && text.contains("CERR"));
             if (success) {
                 successDetected = true;
