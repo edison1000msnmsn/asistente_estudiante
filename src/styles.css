@@ -211,6 +211,28 @@ button:disabled {
   border: 1px solid #dbe5ef;
 }
 
+.queueBox {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #b8d9ee;
+  background: #eaf6ff;
+  color: #1e455f;
+}
+
+.queueBox.ok {
+  border-color: #a7dfbd;
+  background: #e9f8ef;
+  color: #155c37;
+}
+
+.queueBox small {
+  color: inherit;
+  opacity: .8;
+}
+
 .resultBox {
   min-height: 190px;
   max-height: 360px;
@@ -340,6 +362,10 @@ button:disabled {
   grid-template-columns: 180px 1fr 130px 2fr;
 }
 
+.tableRow.queueRow {
+  grid-template-columns: 180px 1fr 150px 90px 2fr;
+}
+
 .tableRow input {
   width: 86px;
   min-height: 36px;
@@ -385,7 +411,7 @@ button:disabled {
     grid-column: auto;
   }
 
-  .row, .tableRow, .tableRow.wide {
+  .row, .tableRow, .tableRow.wide, .tableRow.queueRow {
     grid-template-columns: 1fr;
     align-items: start;
   }

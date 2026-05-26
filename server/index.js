@@ -19,9 +19,11 @@ const env = {
   adminToken: process.env.ADMIN_TOKEN || '',
   allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,capacitor://localhost').split(',').map((x) => x.trim()),
   targetEndpoint: process.env.TARGET_ENDPOINT || 'https://comedor.uncp.edu.pe/charola',
+  officialTicketEndpoint: process.env.OFFICIAL_TICKET_ENDPOINT || 'https://comensales.uncp.edu.pe/api/registros',
   targetPage: process.env.TARGET_PAGE || 'https://comedor.uncp.edu.pe/charola',
   targetMode: process.env.TARGET_MODE || 'api',
-  targetApiToken: process.env.TARGET_API_TOKEN || ''
+  targetApiToken: process.env.TARGET_API_TOKEN || '',
+  publicRateLimit: Number(process.env.PUBLIC_RATE_LIMIT || 5000)
 };
 
 const defaultConfig = {
@@ -36,6 +38,8 @@ const defaultConfig = {
   stopOnFirstSuccess: true,
   rateLimitPerUser: 10,
   globalRateLimit: 120,
+  useServerQueue: true,
+  officialTicketEndpoint: env.officialTicketEndpoint,
   targetEndpoint: env.targetEndpoint,
   targetPage: env.targetPage,
   targetMode: env.targetMode,
@@ -49,6 +53,7 @@ const defaultConfig = {
 const initialDb = {
   students: {},
   requests: {},
+  ticketQueue: {},
   attempts: [],
   usedIdempotencyKeys: {},
   config: defaultConfig
@@ -57,6 +62,7 @@ const initialDb = {
 let db = await loadDb();
 let globalWindow = [];
 const perUserWindows = new Map();
+const queueTimers = new Map();
 
 async function loadDb() {
   try {
@@ -165,6 +171,67 @@ async function callOfficialApi({ dni, codigo, idempotencyKey, clientId, timeoutM
   }
 }
 
+function officialTicketEndpoint(config = db.config) {
+  if (config.officialTicketEndpoint) return config.officialTicketEndpoint;
+  if (String(config.targetEndpoint || '').includes('/api/')) return config.targetEndpoint;
+  return env.officialTicketEndpoint;
+}
+
+function officialStatusFromCode(code) {
+  if (code === 200 || code === 201) return { status: 'success', message: 'Ticket generado por API oficial.' };
+  if (code === 300) return { status: 'not_open_yet', message: 'Fuera de horario segun API oficial.' };
+  if (code === 400) return { status: 'restricted', message: 'Alumno restringido por API oficial.' };
+  if (code === 404) return { status: 'not_found', message: 'DNI/codigo no encontrado por API oficial.' };
+  if (code === 500) return { status: 'sold_out', message: 'Cupos agotados segun API oficial.' };
+  return { status: 'failed', message: 'Respuesta no confirmada por API oficial.' };
+}
+
+async function callOfficialTicketApi({ student, idempotencyKey, timeoutMs }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const body = new URLSearchParams();
+    body.set('data', JSON.stringify({ t1_dni: student.dni, t1_codigo: student.codigo }));
+    const response = await fetch(officialTicketEndpoint(), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json, text/plain, */*',
+        'X-Client-Id': 'railway-queue',
+        'X-Idempotency-Key': idempotencyKey
+      },
+      body
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { message: text.slice(0, 500) };
+    }
+    const officialCode = Number(payload?.code);
+    const mapped = officialStatusFromCode(officialCode);
+    return {
+      ok: mapped.status === 'success',
+      statusCode: response.status,
+      officialCode,
+      status: mapped.status,
+      payload: { ...payload, message: mapped.message }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: 0,
+      officialCode: -1,
+      status: 'failed',
+      payload: { message: error.name === 'AbortError' ? 'timeout' : error.message }
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function runControlledAttempts(student, clientId) {
   const config = db.config;
   const startAt = targetDate(config).getTime() - Number(config.preFireMs);
@@ -202,6 +269,14 @@ async function runControlledAttempts(student, clientId) {
     if (config.targetMode === 'webview') {
       attempt.status = 'webview_required';
       attempt.response = { message: 'Modo WebView: la app debe abrir la pagina oficial y ejecutar selectores configurados.' };
+    } else if (config.officialTicketEndpoint) {
+      const apiResult = await callOfficialTicketApi({
+        student,
+        idempotencyKey,
+        timeoutMs: queueAttemptTimeoutMs(config)
+      });
+      attempt.status = apiResult.status;
+      attempt.response = apiResult;
     } else {
       const apiResult = await callOfficialApi({
         dni: student.dni,
@@ -242,6 +317,170 @@ async function runControlledAttempts(student, clientId) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function queueAttemptTimeoutMs(config = db.config) {
+  const configured = Number(config.requestTimeoutMs || 2500);
+  if (!Number.isFinite(configured)) return 2500;
+  return Math.max(1200, Math.min(configured, 5000));
+}
+
+function queueWindowStartDate(config = db.config) {
+  const target = targetDate(config);
+  return new Date(target.getTime() - Math.max(0, Number(config.preFireMs || 0)));
+}
+
+function queueDedupeKey(studentId, targetAt) {
+  return `${studentId}:${limaDayKey(targetAt)}`;
+}
+
+function queueIsActive(job) {
+  return job && (job.status === 'queued' || job.status === 'running');
+}
+
+function findActiveQueueJob(studentId, targetAt) {
+  const dedupeKey = queueDedupeKey(studentId, targetAt);
+  return Object.values(db.ticketQueue || {}).find((job) => job.dedupeKey === dedupeKey && queueIsActive(job));
+}
+
+function scheduleQueueJob(job) {
+  if (!job || !queueIsActive(job)) return;
+  if (queueTimers.has(job.id)) clearTimeout(queueTimers.get(job.id));
+  const startAt = new Date(job.startAt || job.targetAt).getTime();
+  const delay = Math.max(0, startAt - Date.now());
+  const timer = setTimeout(() => {
+    queueTimers.delete(job.id);
+    runQueueJob(job.id).catch((error) => {
+      const current = db.ticketQueue[job.id];
+      if (current) {
+        current.status = 'failed';
+        current.finishedAt = new Date().toISOString();
+        current.lastMessage = error.message;
+        saveDb().catch(() => {});
+      }
+    });
+  }, delay);
+  queueTimers.set(job.id, timer);
+}
+
+async function finishQueueJob(job, status, result = null) {
+  job.status = status;
+  job.finishedAt = new Date().toISOString();
+  if (result) {
+    job.result = result;
+    job.lastStatus = result.status || status;
+    job.lastMessage = result.payload?.message || result.message || status;
+  }
+  await saveDb();
+}
+
+async function runQueueJob(jobId) {
+  const job = db.ticketQueue?.[jobId];
+  if (!job || !queueIsActive(job)) return;
+
+  const startAt = new Date(job.startAt || job.targetAt).getTime();
+  if (Date.now() < startAt) {
+    scheduleQueueJob(job);
+    return;
+  }
+
+  const student = db.students[job.studentId];
+  if (!student || student.status !== 'approved') {
+    await finishQueueJob(job, 'not_authorized', { status: 'not_authorized', payload: { message: 'Alumno sin autorizacion.' } });
+    return;
+  }
+
+  const hasTicketToday = Boolean(student.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
+  if (Number(student.credits) <= 0 && !hasTicketToday) {
+    await finishQueueJob(job, 'not_authorized', { status: 'not_authorized', payload: { message: 'Alumno sin cupos activos.' } });
+    return;
+  }
+
+  const config = db.config;
+  const maxAttempts = Math.max(1, Math.min(300, Number(config.maxAttempts || 1)));
+  const intervalMs = Math.max(80, Math.min(10_000, Number(config.intervalMs || 400)));
+  const timeoutMs = queueAttemptTimeoutMs(config);
+  job.status = 'running';
+  job.startedAt = job.startedAt || new Date().toISOString();
+  job.maxAttempts = maxAttempts;
+  job.intervalMs = intervalMs;
+  await saveDb();
+
+  let lastResult = null;
+  for (let index = Number(job.attemptsRun || 0); index < maxAttempts; index += 1) {
+    if (!checkSlidingWindow('global', Number(config.globalRateLimit))) {
+      await finishQueueJob(job, 'rate_limit', { status: 'rate_limit', payload: { message: 'Limite global alcanzado en Railway.' } });
+      return;
+    }
+    if (!checkSlidingWindow(job.studentId, Number(config.rateLimitPerUser))) {
+      await finishQueueJob(job, 'rate_limit', { status: 'rate_limit', payload: { message: 'Limite por alumno alcanzado en Railway.' } });
+      return;
+    }
+
+    const idempotencyKey = `${job.studentId}:queue:${limaDayKey(job.targetAt)}:${index + 1}:${nanoid(8)}`;
+    db.usedIdempotencyKeys[idempotencyKey] = true;
+
+    const attempt = {
+      id: nanoid(),
+      queueJobId: job.id,
+      studentId: job.studentId,
+      dni: job.dni,
+      codigo: job.codigo,
+      mode: 'backend_queue',
+      number: index + 1,
+      idempotencyKey,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      response: null
+    };
+
+    const apiResult = await callOfficialTicketApi({ student: job, idempotencyKey, timeoutMs });
+    attempt.status = apiResult.status;
+    attempt.response = apiResult;
+    db.attempts.unshift(attempt);
+    if (db.attempts.length > 2000) db.attempts = db.attempts.slice(0, 2000);
+
+    job.attemptsRun = index + 1;
+    job.lastAttemptAt = new Date().toISOString();
+    job.lastStatus = apiResult.status;
+    job.lastMessage = apiResult.payload?.message || apiResult.status;
+    job.result = apiResult;
+    lastResult = apiResult;
+    await saveDb();
+
+    if (apiResult.status === 'success') {
+      const alreadyUsedToday = Boolean(student.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
+      if (!alreadyUsedToday) {
+        student.credits = Math.max(0, Number(student.credits || 0) - 1);
+      }
+      student.lastSuccessAt = new Date().toISOString();
+      await finishQueueJob(job, 'success', apiResult);
+      return;
+    }
+
+    if (['sold_out', 'restricted', 'not_found'].includes(apiResult.status)) {
+      await finishQueueJob(job, apiResult.status, apiResult);
+      return;
+    }
+
+    if (index < maxAttempts - 1) {
+      await sleep(apiResult.status === 'failed' ? Math.min(1200, intervalMs * 2) : intervalMs);
+    }
+  }
+
+  await finishQueueJob(job, lastResult?.status || 'failed', lastResult || { status: 'failed', payload: { message: 'Intentos de cola finalizados sin confirmacion.' } });
+}
+
+async function resumeQueueJobs() {
+  for (const job of Object.values(db.ticketQueue || {})) {
+    if (job.status === 'running') job.status = 'queued';
+    if (job.status === 'queued') scheduleQueueJob(job);
+  }
+  await saveDb();
+}
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
@@ -252,7 +491,7 @@ app.use(cors({
     return callback(new Error('Origen no permitido por CORS.'));
   }
 }));
-app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+app.use(rateLimit({ windowMs: 60_000, limit: env.publicRateLimit, standardHeaders: true, legacyHeaders: false }));
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'asistente-de-estudiantes', now: new Date().toISOString() }));
 
@@ -314,6 +553,63 @@ app.post('/api/attempts/run', async (req, res) => {
   res.status(result.status === 'rate_limit' ? 429 : 200).json(result);
 });
 
+app.post('/api/queue/arm', async (req, res) => {
+  const parsed = validateStudentPayload(req.body);
+  if (parsed.error) return res.status(400).json({ ok: false, message: parsed.error });
+  if (!db.config.useServerQueue) {
+    return res.status(409).json({ ok: false, status: 'queue_disabled', message: 'La cola Railway esta desactivada por el administrador.' });
+  }
+  const student = db.students[parsed.id];
+  const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
+  if (!student || student.status !== 'approved' || (Number(student.credits) <= 0 && !hasTicketToday)) {
+    return res.status(403).json({ ok: false, status: 'not_authorized', message: 'Alumno sin autorizacion o sin cupos.' });
+  }
+
+  const target = targetDate(db.config);
+  const startAt = queueWindowStartDate(db.config);
+  const existing = findActiveQueueJob(parsed.id, target.toISOString());
+  if (existing) {
+    scheduleQueueJob(existing);
+    return res.json({ ok: true, status: existing.status, reused: true, job: existing, targetTime: existing.targetAt, startAt: existing.startAt });
+  }
+
+  const job = {
+    id: nanoid(),
+    dedupeKey: queueDedupeKey(parsed.id, target.toISOString()),
+    studentId: parsed.id,
+    dni: parsed.dni,
+    codigo: parsed.codigo,
+    status: 'queued',
+    queuedAt: new Date().toISOString(),
+    startAt: startAt.toISOString(),
+    targetAt: target.toISOString(),
+    attemptsRun: 0,
+    maxAttempts: Number(db.config.maxAttempts || 0),
+    intervalMs: Number(db.config.intervalMs || 0),
+    lastStatus: 'queued',
+    lastMessage: 'Cola Railway armada.',
+    result: null
+  };
+  db.ticketQueue[job.id] = job;
+  await saveDb();
+  scheduleQueueJob(job);
+  res.json({ ok: true, status: 'queued', job, targetTime: job.targetAt, startAt: job.startAt });
+});
+
+app.get('/api/queue/:jobId/status', (req, res) => {
+  const job = db.ticketQueue?.[req.params.jobId];
+  if (!job) return res.status(404).json({ ok: false, message: 'Cola no encontrada.' });
+  res.json({ ok: true, job });
+});
+
+app.get('/api/student/:id/queue', (req, res) => {
+  const jobs = Object.values(db.ticketQueue || {})
+    .filter((job) => job.studentId === req.params.id)
+    .sort((a, b) => new Date(b.queuedAt).getTime() - new Date(a.queuedAt).getTime())
+    .slice(0, 10);
+  res.json({ ok: true, jobs });
+});
+
 app.post('/admin/login', (req, res) => {
   const { email, password } = req.body || {};
   if (!env.adminEmail || !env.adminPassword || !env.adminToken) {
@@ -361,7 +657,7 @@ app.post('/admin/requests/:id/approve', requireAdmin, async (req, res) => {
 });
 
 app.post('/admin/config', requireAdmin, async (req, res) => {
-  const allowed = ['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'stopOnFirstSuccess', 'rateLimitPerUser', 'globalRateLimit', 'targetEndpoint', 'targetPage', 'targetMode', 'selectors'];
+  const allowed = ['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'stopOnFirstSuccess', 'rateLimitPerUser', 'globalRateLimit', 'useServerQueue', 'officialTicketEndpoint', 'targetEndpoint', 'targetPage', 'targetMode', 'selectors'];
   for (const key of allowed) {
     if (req.body[key] !== undefined) db.config[key] = req.body[key];
   }
@@ -371,8 +667,16 @@ app.post('/admin/config', requireAdmin, async (req, res) => {
 
 app.get('/admin/attempts', requireAdmin, (_req, res) => res.json({ ok: true, attempts: db.attempts.slice(0, 500) }));
 
+app.get('/admin/queue', requireAdmin, (_req, res) => {
+  const jobs = Object.values(db.ticketQueue || {})
+    .sort((a, b) => new Date(b.queuedAt || b.startedAt || 0).getTime() - new Date(a.queuedAt || a.startedAt || 0).getTime())
+    .slice(0, 500);
+  res.json({ ok: true, jobs });
+});
+
 app.get('/admin/stats', requireAdmin, (_req, res) => {
   const attempts = db.attempts;
+  const queueJobs = Object.values(db.ticketQueue || {});
   res.json({
     ok: true,
     stats: {
@@ -381,6 +685,8 @@ app.get('/admin/stats', requireAdmin, (_req, res) => {
       attempts: attempts.length,
       success: attempts.filter((a) => a.status === 'success').length,
       failed: attempts.filter((a) => a.status !== 'success').length,
+      queueActive: queueJobs.filter(queueIsActive).length,
+      queueSuccess: queueJobs.filter((job) => job.status === 'success').length,
       creditsAvailable: Object.values(db.students).reduce((sum, student) => sum + Number(student.credits || 0), 0)
     }
   });
@@ -392,6 +698,8 @@ app.get('*', async (req, res, next) => {
   if (req.path.startsWith('/api/') || req.path.startsWith('/admin/') || req.path === '/health') return next();
   res.sendFile(path.join(distDir, 'index.html'));
 });
+
+await resumeQueueJobs();
 
 app.listen(env.port, () => {
   console.log(`Asistente de estudiantes backend escuchando en puerto ${env.port}`);

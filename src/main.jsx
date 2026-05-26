@@ -80,6 +80,36 @@ function StatusBadge({ ok, children }) {
   return <span className={`badge ${ok ? 'ok' : 'warn'}`}>{children}</span>;
 }
 
+const ACTIVE_QUEUE_STATUSES = new Set(['queued', 'running']);
+
+function readStoredQueueJob() {
+  try {
+    return JSON.parse(localStorage.getItem('student:queueJob') || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function queueStatusLabel(status) {
+  const labels = {
+    queued: 'En cola Railway',
+    running: 'Disparando desde Railway',
+    success: 'Ticket confirmado',
+    sold_out: 'Cupos agotados',
+    restricted: 'Alumno restringido',
+    not_found: 'Alumno no encontrado',
+    not_authorized: 'Sin autorizacion',
+    rate_limit: 'Limite alcanzado',
+    failed: 'Sin confirmacion',
+    not_open_yet: 'Fuera de horario'
+  };
+  return labels[status] || status || 'Sin estado';
+}
+
+function queueMessage(job) {
+  return job?.result?.payload?.message || job?.lastMessage || queueStatusLabel(job?.status);
+}
+
 function StudentApp({ onSwitchRole }) {
   const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
   const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
@@ -91,11 +121,13 @@ function StudentApp({ onSwitchRole }) {
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState(JSON.parse(localStorage.getItem('student:history') || '[]'));
   const [attemptLogs, setAttemptLogs] = useState([]);
+  const [queueJob, setQueueJobState] = useState(readStoredQueueJob);
 
   const id = useMemo(() => studentId(dni, codigo), [dni, codigo]);
   const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
   const correctedNow = nowTick + serverOffset;
   const countdownMs = targetMs ? targetMs - correctedNow : 0;
+  const isAuthorized = status?.id === id && status?.authorized;
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 47);
@@ -111,6 +143,49 @@ function StudentApp({ onSwitchRole }) {
     localStorage.setItem('student:codigo', codigo);
   }, [dni, codigo]);
 
+  useEffect(() => {
+    if (!queueJob?.id || !ACTIVE_QUEUE_STATUSES.has(queueJob.status) || (queueJob.studentId && queueJob.studentId !== id)) return undefined;
+    let cancelled = false;
+    async function pollQueue() {
+      try {
+        const data = await api(`/api/queue/${encodeURIComponent(queueJob.id)}/status`);
+        if (cancelled) return;
+        updateQueueJob(data.job);
+        if (!ACTIVE_QUEUE_STATUSES.has(data.job.status)) {
+          const entry = {
+            at: new Date().toISOString(),
+            ok: data.job.status === 'success',
+            message: queueMessage(data.job),
+            queueJobId: data.job.id,
+            attempts: data.job.attemptsRun || 0
+          };
+          setHistory((items) => {
+            const next = [entry, ...items].slice(0, 30);
+            localStorage.setItem('student:history', JSON.stringify(next));
+            return next;
+          });
+          setResult({ ok: data.job.status === 'success', status: data.job.status, message: queueMessage(data.job), job: data.job });
+          addAttemptLog(`Cola Railway finalizada: ${queueStatusLabel(data.job.status)}.`);
+          await checkStatus({ keepResult: true });
+        }
+      } catch (error) {
+        if (!cancelled) setResult({ ok: false, message: error.message });
+      }
+    }
+    pollQueue();
+    const timer = setInterval(pollQueue, 1200);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [queueJob?.id, queueJob?.status, id]);
+
+  function updateQueueJob(job) {
+    setQueueJobState(job);
+    if (job) localStorage.setItem('student:queueJob', JSON.stringify(job));
+    else localStorage.removeItem('student:queueJob');
+  }
+
   async function refreshConfig() {
     const [time, target] = await Promise.all([
       api('/api/time'),
@@ -121,12 +196,12 @@ function StudentApp({ onSwitchRole }) {
     return target;
   }
 
-  async function checkStatus() {
+  async function checkStatus({ keepResult = false } = {}) {
     setBusy(true);
-    setResult(null);
+    if (!keepResult) setResult(null);
     try {
       const data = await api(`/api/student/${encodeURIComponent(id)}/status`);
-      setStatus(data);
+      setStatus({ ...data, id });
       await refreshConfig();
     } catch (error) {
       setResult({ ok: false, message: error.message });
@@ -143,7 +218,7 @@ function StudentApp({ onSwitchRole }) {
         body: JSON.stringify({ dni, codigo })
       });
       setResult({ ok: true, message: `Solicitud enviada: ${data.request.id}` });
-      await checkStatus();
+      await checkStatus({ keepResult: true });
     } catch (error) {
       setResult({ ok: false, message: error.message });
     } finally {
@@ -178,7 +253,7 @@ function StudentApp({ onSwitchRole }) {
       if (isWebViewMode) {
         openOfficialWebView(scheduled ? fireAtMs : Date.now(), undefined, { mode: scheduled ? 'prefire' : 'immediate' });
       }
-      await checkStatus();
+      await checkStatus({ keepResult: true });
     } catch (error) {
       setResult({ ok: false, message: error.message });
     } finally {
@@ -192,13 +267,30 @@ function StudentApp({ onSwitchRole }) {
     setBusy(true);
     try {
       const freshConfig = await refreshConfig();
-      if (!status?.authorized) {
+      if (!isAuthorized) {
         setResult({ ok: false, message: 'Primero verifique que el alumno tenga autorizacion/cupo.' });
         return;
       }
       const cfg = freshConfig?.config;
       const firePlan = resolveGenerateFireAt(freshConfig);
       const fireAt = firePlan.fireAt;
+      if (cfg?.useServerQueue && !firePlan.immediate) {
+        addAttemptLog('Armando cola Railway: el backend disparara aunque el telefono sea lento.');
+        addAttemptLog(`Ventana controlada: ${Number(cfg?.preFireMs || 3000)} ms antes, intervalo ${Number(cfg?.intervalMs || 400)} ms.`);
+        const queued = await api('/api/queue/arm', {
+          method: 'POST',
+          body: JSON.stringify({ dni, codigo, clientId: 'student-app' })
+        });
+        updateQueueJob(queued.job);
+        addAttemptLog(`Cola lista. Inicio: ${new Date(queued.startAt).toLocaleTimeString()}, objetivo: ${new Date(queued.targetTime).toLocaleTimeString()}.`);
+        setResult({
+          ok: true,
+          status: queued.status,
+          message: 'Cola Railway armada. Mantenga la app abierta para ver el estado; el disparo lo ejecuta el backend.',
+          job: queued.job
+        });
+        return;
+      }
       if (cfg?.targetMode === 'webview') {
         addAttemptLog('Abriendo la web oficial ahora para dejarla precargada.');
         if (firePlan.immediate) {
@@ -242,9 +334,10 @@ function StudentApp({ onSwitchRole }) {
     const fallbackCampo1 = '#dni, input[name="tl_dni"], input[id*="dni"], input[placeholder*="DNI"], input[placeholder*="Documento"]';
     const fallbackCampo2 = '#codigo, #matricula, input[name*="codigo"], input[name*="matricula"], input[id*="codigo"], input[id*="matricula"], input[placeholder*="Codigo"], input[placeholder*="Código"], input[placeholder*="Matricula"], input[placeholder*="Matrícula"]';
     const fallbackButton = '.btn-register, button[type="submit"], button.btn-success, button, input[type="submit"]';
-    const directEndpoint = activeConfig.targetEndpoint?.includes('/api/')
-      ? activeConfig.targetEndpoint
-      : 'https://comensales.uncp.edu.pe/api/registros';
+    const directEndpoint = activeConfig.officialTicketEndpoint
+      || (activeConfig.targetEndpoint?.includes('/api/')
+        ? activeConfig.targetEndpoint
+        : 'https://comensales.uncp.edu.pe/api/registros');
     const params = new URLSearchParams({
       url: activeConfig.targetPage || TARGET_PAGE,
       directEndpoint,
@@ -315,7 +408,7 @@ function StudentApp({ onSwitchRole }) {
             <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>
             <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar acceso</button>
           </div>
-          {status && (
+          {status?.id === id && (
             <div className="statusLine">
               <StatusBadge ok={status.authorized}>{status.authorized ? 'Autorizado' : 'Sin cupo activo'}</StatusBadge>
               <span>Cupos: {status.student?.credits ?? 0}</span>
@@ -336,13 +429,21 @@ function StudentApp({ onSwitchRole }) {
             <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
             <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
           </div>
-          <button className="primary" disabled={busy || !status?.authorized} onClick={generateWithPrefire}>
+          <button className="primary" disabled={busy || !isAuthorized} onClick={generateWithPrefire}>
             <Activity size={18} /> Generar con disparos
           </button>
-          <button disabled={busy || !status?.authorized} onClick={() => runAttempts({ scheduled: false })}>
+          <button disabled={busy || !isAuthorized} onClick={() => runAttempts({ scheduled: false })}>
             <Ticket size={18} /> Verificar ahora
           </button>
-          {config && <p className="hint">Generar con disparos abre la pagina oficial de inmediato, dispara primero la API oficial de registro, y usa la WebView como respaldo/comprobante. Verificar ahora sirve para recuperar un ticket ya emitido o ver si la web oficial cerro/no tiene cupos.</p>}
+          {queueJob && queueJob.studentId === id && (
+            <div className={`queueBox ${queueJob.status === 'success' ? 'ok' : ''}`}>
+              <strong>{queueStatusLabel(queueJob.status)}</strong>
+              <span>{queueMessage(queueJob)}</span>
+              <small>Intentos Railway: {queueJob.attemptsRun || 0}/{queueJob.maxAttempts || config?.config?.maxAttempts || '-'}</small>
+              <small>Inicio: {queueJob.startAt ? new Date(queueJob.startAt).toLocaleTimeString() : '-'} | Objetivo: {queueJob.targetAt ? new Date(queueJob.targetAt).toLocaleTimeString() : '-'}</small>
+            </div>
+          )}
+          {config && <p className="hint">Generar con disparos arma una cola en Railway antes de la hora: el backend hace los intentos controlados contra la API oficial. Verificar ahora abre la WebView/API inmediata para recuperar un ticket ya emitido o ver cupos agotados/cierre.</p>}
           <div className="attemptLog">
             {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
           </div>
@@ -385,7 +486,7 @@ function AdminApp({ onSwitchRole }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [tab, setTab] = useState('dashboard');
-  const [data, setData] = useState({ stats: null, students: [], requests: [], attempts: [], config: null });
+  const [data, setData] = useState({ stats: null, students: [], requests: [], attempts: [], queue: [], config: null });
   const [message, setMessage] = useState('');
 
   useEffect(() => {
@@ -400,14 +501,15 @@ function AdminApp({ onSwitchRole }) {
 
   async function loadAdmin() {
     try {
-      const [stats, students, requests, attempts, config] = await Promise.all([
+      const [stats, students, requests, attempts, queue, config] = await Promise.all([
         api('/admin/stats', { token }),
         api('/admin/students', { token }),
         api('/admin/requests', { token }),
         api('/admin/attempts', { token }),
+        api('/admin/queue', { token }),
         api('/api/config/target-time')
       ]);
-      setData({ stats: stats.stats, students: students.students, requests: requests.requests, attempts: attempts.attempts, config: config.config });
+      setData({ stats: stats.stats, students: students.students, requests: requests.requests, attempts: attempts.attempts, queue: queue.jobs, config: config.config });
     } catch (error) {
       setMessage(error.message);
     }
@@ -439,6 +541,8 @@ function AdminApp({ onSwitchRole }) {
       rateLimitPerUser: Number(next.rateLimitPerUser),
       globalRateLimit: Number(next.globalRateLimit),
       stopOnFirstSuccess: next.stopOnFirstSuccess === 'on',
+      useServerQueue: next.useServerQueue === 'on',
+      officialTicketEndpoint: next.officialTicketEndpoint,
       targetMode: next.targetMode,
       targetEndpoint: next.targetEndpoint,
       targetPage: next.targetPage,
@@ -479,6 +583,7 @@ function AdminApp({ onSwitchRole }) {
           ['dashboard', LayoutDashboard, 'Dashboard'],
           ['students', Users, 'Alumnos'],
           ['requests', ListChecks, 'Solicitudes'],
+          ['queue', Clock3, 'Cola Railway'],
           ['attempts', History, 'Intentos'],
           ['config', Settings, 'Configuracion']
         ].map(([key, Icon, label]) => (
@@ -490,6 +595,7 @@ function AdminApp({ onSwitchRole }) {
       {tab === 'dashboard' && <Dashboard stats={data.stats} />}
       {tab === 'students' && <Students students={data.students} setCredits={setCredits} />}
       {tab === 'requests' && <Requests requests={data.requests} approve={approve} />}
+      {tab === 'queue' && <QueueJobs jobs={data.queue} />}
       {tab === 'attempts' && <Attempts attempts={data.attempts} />}
       {tab === 'config' && <ConfigForm config={data.config} saveConfig={saveConfig} />}
     </div>
@@ -503,6 +609,8 @@ function Dashboard({ stats }) {
     ['Intentos', stats?.attempts ?? 0],
     ['Exitos', stats?.success ?? 0],
     ['Fallos', stats?.failed ?? 0],
+    ['Cola activa', stats?.queueActive ?? 0],
+    ['Cola exitosa', stats?.queueSuccess ?? 0],
     ['Cupos disponibles', stats?.creditsAvailable ?? 0]
   ];
   return <main className="cards">{items.map(([label, value]) => <section className="metric" key={label}><span>{label}</span><strong>{value}</strong></section>)}</main>;
@@ -520,6 +628,24 @@ function Attempts({ attempts }) {
   return <main className="panel tablePanel"><h2>Historial de intentos</h2>{attempts.map((a) => <div className="tableRow wide" key={a.id}><span>{new Date(a.createdAt).toLocaleString()}</span><span>{a.dni}</span><span>{a.status}</span><small>{a.response?.payload?.message || a.response?.payload?.status || a.mode}</small></div>)}</main>;
 }
 
+function QueueJobs({ jobs }) {
+  return (
+    <main className="panel tablePanel">
+      <h2>Cola Railway</h2>
+      {jobs.length === 0 && <p className="hint">Todavia no hay disparos programados en backend.</p>}
+      {jobs.map((job) => (
+        <div className="tableRow queueRow" key={job.id}>
+          <span>{new Date(job.queuedAt).toLocaleString()}</span>
+          <span>{job.dni}</span>
+          <span>{queueStatusLabel(job.status)}</span>
+          <span>{job.attemptsRun || 0}/{job.maxAttempts || '-'}</span>
+          <small>{queueMessage(job)}</small>
+        </div>
+      ))}
+    </main>
+  );
+}
+
 function ConfigForm({ config, saveConfig }) {
   if (!config) return null;
   return (
@@ -530,11 +656,13 @@ function ConfigForm({ config, saveConfig }) {
           <label className="field" key={key}><span>{key}</span><input name={key} type="number" defaultValue={config[key]} /></label>
         ))}
         <label className="field"><span>Modo</span><select name="targetMode" defaultValue={config.targetMode}><option value="api">api</option><option value="webview">webview</option></select></label>
+        <label className="field wideField"><span>Endpoint oficial de ticket</span><input name="officialTicketEndpoint" defaultValue={config.officialTicketEndpoint} /></label>
         <label className="field wideField"><span>Endpoint</span><input name="targetEndpoint" defaultValue={config.targetEndpoint} /></label>
         <label className="field wideField"><span>Pagina oficial</span><input name="targetPage" defaultValue={config.targetPage} /></label>
         <label className="field"><span>Selector campo 1</span><input name="selectorCampo1" defaultValue={config.selectors?.campo1} /></label>
         <label className="field"><span>Selector campo 2</span><input name="selectorCampo2" defaultValue={config.selectors?.campo2} /></label>
         <label className="field"><span>Selector boton</span><input name="selectorButton" defaultValue={config.selectors?.button} /></label>
+        <label className="check"><input name="useServerQueue" type="checkbox" defaultChecked={config.useServerQueue} /> Usar cola Railway para disparo critico</label>
         <label className="check"><input name="stopOnFirstSuccess" type="checkbox" defaultChecked={config.stopOnFirstSuccess} /> Detener al primer exito</label>
         <button className="primary"><Save size={18} /> Guardar</button>
       </form>
