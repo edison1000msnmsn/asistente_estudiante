@@ -211,6 +211,16 @@ button:disabled {
   border: 1px solid #dbe5ef;
 }
 
+.debugDetails {
+  margin-top: 12px;
+  color: #52687d;
+}
+
+.debugDetails summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
 .queueBox {
   display: grid;
   gap: 6px;

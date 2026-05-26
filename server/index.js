@@ -569,8 +569,22 @@ app.post('/api/queue/arm', async (req, res) => {
   const startAt = queueWindowStartDate(db.config);
   const existing = findActiveQueueJob(parsed.id, target.toISOString());
   if (existing) {
+    if (existing.status === 'queued') {
+      existing.dni = parsed.dni;
+      existing.codigo = parsed.codigo;
+      existing.dedupeKey = queueDedupeKey(parsed.id, target.toISOString());
+      existing.startAt = startAt.toISOString();
+      existing.targetAt = target.toISOString();
+      existing.maxAttempts = Number(db.config.maxAttempts || 0);
+      existing.intervalMs = Number(db.config.intervalMs || 0);
+      existing.lastStatus = 'queued';
+      existing.lastMessage = 'Programacion actualizada con la configuracion vigente.';
+      existing.updatedAt = new Date().toISOString();
+      existing.result = null;
+      await saveDb();
+    }
     scheduleQueueJob(existing);
-    return res.json({ ok: true, status: existing.status, reused: true, job: existing, targetTime: existing.targetAt, startAt: existing.startAt });
+    return res.json({ ok: true, status: existing.status, reused: true, updated: existing.status === 'queued', job: existing, targetTime: existing.targetAt, startAt: existing.startAt });
   }
 
   const job = {

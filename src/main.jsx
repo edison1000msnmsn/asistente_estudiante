@@ -92,8 +92,8 @@ function readStoredQueueJob() {
 
 function queueStatusLabel(status) {
   const labels = {
-    queued: 'En cola Railway',
-    running: 'Disparando desde Railway',
+    queued: 'Preparado',
+    running: 'Generando ticket',
     success: 'Ticket confirmado',
     sold_out: 'Cupos agotados',
     restricted: 'Alumno restringido',
@@ -108,6 +108,12 @@ function queueStatusLabel(status) {
 
 function queueMessage(job) {
   return job?.result?.payload?.message || job?.lastMessage || queueStatusLabel(job?.status);
+}
+
+function studentQueueMessage(job) {
+  if (job?.status === 'queued') return 'Tu registro automatico quedo programado. No vuelvas a presionar el boton.';
+  if (job?.status === 'running') return 'Estamos intentando generar tu ticket automaticamente.';
+  return queueMessage(job);
 }
 
 function StudentApp({ onSwitchRole }) {
@@ -286,7 +292,7 @@ function StudentApp({ onSwitchRole }) {
         setResult({
           ok: true,
           status: queued.status,
-          message: 'Cola Railway armada. Mantenga la app abierta para ver el estado; el disparo lo ejecuta el backend.',
+          message: 'Registro automatico preparado. Mantenga la app abierta para ver el estado.',
           job: queued.job
         });
         return;
@@ -438,15 +444,20 @@ function StudentApp({ onSwitchRole }) {
           {queueJob && queueJob.studentId === id && (
             <div className={`queueBox ${queueJob.status === 'success' ? 'ok' : ''}`}>
               <strong>{queueStatusLabel(queueJob.status)}</strong>
-              <span>{queueMessage(queueJob)}</span>
-              <small>Intentos Railway: {queueJob.attemptsRun || 0}/{queueJob.maxAttempts || config?.config?.maxAttempts || '-'}</small>
-              <small>Inicio: {queueJob.startAt ? new Date(queueJob.startAt).toLocaleTimeString() : '-'} | Objetivo: {queueJob.targetAt ? new Date(queueJob.targetAt).toLocaleTimeString() : '-'}</small>
+              <span>{studentQueueMessage(queueJob)}</span>
+              <small>Inicio automatico: {queueJob.startAt ? new Date(queueJob.startAt).toLocaleTimeString() : '-'}</small>
+              <small>Hora objetivo: {queueJob.targetAt ? new Date(queueJob.targetAt).toLocaleTimeString() : '-'}</small>
             </div>
           )}
-          {config && <p className="hint">Generar con disparos arma una cola en Railway antes de la hora: el backend hace los intentos controlados contra la API oficial. Verificar ahora abre la WebView/API inmediata para recuperar un ticket ya emitido o ver cupos agotados/cierre.</p>}
-          <div className="attemptLog">
-            {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
-          </div>
+          {config && <p className="hint">Cuando aparece Preparado, el registro automatico ya quedo programado. Verificar ahora sirve para consultar el ticket despues de la hora o ver si ya no hay cupos.</p>}
+          {attemptLogs.length > 0 && (
+            <details className="debugDetails">
+              <summary>Detalles tecnicos</summary>
+              <div className="attemptLog">
+                {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
+              </div>
+            </details>
+          )}
         </section>
 
         <section className="panel">
