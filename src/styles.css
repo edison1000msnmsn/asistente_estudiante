@@ -71,6 +71,16 @@ button:disabled {
   text-decoration: none;
 }
 
+.backButton {
+  min-width: 118px;
+  font-weight: 800;
+  background: #e3ebf4;
+}
+
+.authBack {
+  justify-self: start;
+}
+
 .studentGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
@@ -406,6 +416,8 @@ button:disabled {
   display: flex;
   gap: 8px;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 820px) {

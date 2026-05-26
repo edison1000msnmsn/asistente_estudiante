@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
+  ArrowLeft,
   CheckCircle2,
   Clock3,
   History,
@@ -393,7 +394,7 @@ function StudentApp({ onSwitchRole }) {
           <h1>Asistente de estudiantes</h1>
         </div>
         <div className="topActions">
-          <button className="iconButton" onClick={onSwitchRole} title="Cambiar perfil"><Users size={20} /></button>
+          <button className="backButton" onClick={onSwitchRole}><ArrowLeft size={18} /> Regresar</button>
           <a className="iconButton" href={config?.config?.targetPage || TARGET_PAGE} target="_blank" rel="noreferrer" title="Abrir pagina oficial">
             <Ticket size={20} />
           </a>
@@ -568,6 +569,7 @@ function AdminApp({ onSwitchRole }) {
     return (
       <div className="authPage">
         <section className="panel authBox">
+          <button className="backButton authBack" onClick={onSwitchRole}><ArrowLeft size={18} /> Regresar</button>
           <div className="sectionTitle"><KeyRound /><h1>Panel administrador</h1></div>
           <Field label="Correo admin" value={email} onChange={setEmail} />
           <Field label="Password" type="password" value={password} onChange={setPassword} />
@@ -585,7 +587,7 @@ function AdminApp({ onSwitchRole }) {
           <h1>Panel de control</h1>
         </div>
         <div className="topActions">
-          <button className="iconButton" title="Cambiar perfil" onClick={onSwitchRole}><Users size={20} /></button>
+          <button className="backButton" onClick={onSwitchRole}><ArrowLeft size={18} /> Regresar</button>
           <button className="iconButton" title="Cerrar sesion" onClick={() => { localStorage.removeItem('admin:token'); setToken(''); }}><LogOut size={20} /></button>
         </div>
       </header>
