@@ -63,6 +63,7 @@ let db = await loadDb();
 let globalWindow = [];
 const perUserWindows = new Map();
 const queueTimers = new Map();
+const queueRunners = new Set();
 
 async function loadDb() {
   try {
@@ -346,7 +347,7 @@ function findActiveQueueJob(studentId, targetAt) {
 }
 
 function scheduleQueueJob(job) {
-  if (!job || !queueIsActive(job)) return;
+  if (!job || job.status !== 'queued') return;
   if (queueTimers.has(job.id)) clearTimeout(queueTimers.get(job.id));
   const startAt = new Date(job.startAt || job.targetAt).getTime();
   const delay = Math.max(0, startAt - Date.now());
@@ -377,6 +378,9 @@ async function finishQueueJob(job, status, result = null) {
 }
 
 async function runQueueJob(jobId) {
+  if (queueRunners.has(jobId)) return;
+  queueRunners.add(jobId);
+  try {
   const job = db.ticketQueue?.[jobId];
   if (!job || !queueIsActive(job)) return;
 
@@ -399,7 +403,7 @@ async function runQueueJob(jobId) {
   }
 
   const config = db.config;
-  const maxAttempts = Math.max(1, Math.min(300, Number(config.maxAttempts || 1)));
+  const maxAttempts = Math.max(1, Math.min(600, Number(config.maxAttempts || 1)));
   const intervalMs = Math.max(80, Math.min(10_000, Number(config.intervalMs || 400)));
   const timeoutMs = queueAttemptTimeoutMs(config);
   job.status = 'running';
@@ -471,6 +475,9 @@ async function runQueueJob(jobId) {
   }
 
   await finishQueueJob(job, lastResult?.status || 'failed', lastResult || { status: 'failed', payload: { message: 'Intentos de cola finalizados sin confirmacion.' } });
+  } finally {
+    queueRunners.delete(jobId);
+  }
 }
 
 async function resumeQueueJobs() {
@@ -583,7 +590,7 @@ app.post('/api/queue/arm', async (req, res) => {
       existing.result = null;
       await saveDb();
     }
-    scheduleQueueJob(existing);
+    if (existing.status === 'queued') scheduleQueueJob(existing);
     return res.json({ ok: true, status: existing.status, reused: true, updated: existing.status === 'queued', job: existing, targetTime: existing.targetAt, startAt: existing.startAt });
   }
 
