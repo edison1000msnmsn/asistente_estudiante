@@ -56,6 +56,8 @@ const initialDb = {
   ticketQueue: {},
   attempts: [],
   usedIdempotencyKeys: {},
+  lastHistoryCleanupAt: null,
+  lastHistoryCleanupDay: null,
   config: defaultConfig
 };
 
@@ -108,6 +110,32 @@ function limaDayKey(value = new Date()) {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date(value));
+}
+
+function limaDateParts(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(value));
+  const mapped = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(mapped.year),
+    month: Number(mapped.month),
+    day: Number(mapped.day)
+  };
+}
+
+function limaNoonUtc(value = new Date()) {
+  const parts = limaDateParts(value);
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 17, 0, 0, 0));
+}
+
+function nextLimaNoon(value = new Date()) {
+  const target = limaNoonUtc(value);
+  if (target.getTime() <= new Date(value).getTime()) target.setUTCDate(target.getUTCDate() + 1);
+  return target;
 }
 
 function requireAdmin(req, res, next) {
@@ -488,6 +516,51 @@ async function resumeQueueJobs() {
   await saveDb();
 }
 
+async function clearCompletedHistory(cleanupDay = limaDayKey()) {
+  const before = {
+    attempts: db.attempts.length,
+    queueJobs: Object.keys(db.ticketQueue || {}).length,
+    idempotencyKeys: Object.keys(db.usedIdempotencyKeys || {}).length
+  };
+  db.attempts = [];
+  db.ticketQueue = Object.fromEntries(
+    Object.entries(db.ticketQueue || {}).filter(([, job]) => queueIsActive(job))
+  );
+  db.usedIdempotencyKeys = {};
+  db.lastHistoryCleanupAt = new Date().toISOString();
+  db.lastHistoryCleanupDay = cleanupDay;
+  await saveDb();
+  const after = {
+    attempts: db.attempts.length,
+    queueJobs: Object.keys(db.ticketQueue || {}).length,
+    idempotencyKeys: Object.keys(db.usedIdempotencyKeys || {}).length
+  };
+  console.log(`Historial limpiado: attempts ${before.attempts}->${after.attempts}, queue ${before.queueJobs}->${after.queueJobs}, keys ${before.idempotencyKeys}->${after.idempotencyKeys}`);
+}
+
+async function clearMissedNoonHistory() {
+  const now = new Date();
+  const today = limaDayKey(now);
+  if (now.getTime() >= limaNoonUtc(now).getTime() && db.lastHistoryCleanupDay !== today) {
+    await clearCompletedHistory(today);
+  }
+}
+
+function scheduleDailyHistoryCleanup() {
+  const target = nextLimaNoon();
+  const delay = Math.max(0, target.getTime() - Date.now());
+  setTimeout(async () => {
+    try {
+      await clearCompletedHistory(limaDayKey(target));
+    } catch (error) {
+      console.error('No se pudo limpiar el historial diario:', error);
+    } finally {
+      scheduleDailyHistoryCleanup();
+    }
+  }, delay);
+  console.log(`Proxima limpieza de historial: ${target.toISOString()} (12:00 p. m. Lima)`);
+}
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
@@ -721,6 +794,8 @@ app.get('*', async (req, res, next) => {
 });
 
 await resumeQueueJobs();
+await clearMissedNoonHistory();
+scheduleDailyHistoryCleanup();
 
 app.listen(env.port, () => {
   console.log(`Asistente de estudiantes backend escuchando en puerto ${env.port}`);
