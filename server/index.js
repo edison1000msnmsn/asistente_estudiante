@@ -615,8 +615,30 @@ app.post('/api/student/:id/use-credit', async (req, res) => {
     return res.json({ ok: true, credits: student.credits, alreadyUsedToday: true, message: 'Ticket ya registrado hoy; no se descuenta otro cupo.' });
   }
   if (Number(student.credits) <= 0) return res.status(403).json({ ok: false, message: 'Sin cupos disponibles.' });
+  const beforeCredits = Number(student.credits || 0);
   student.credits = Math.max(0, Number(student.credits) - 1);
   student.lastSuccessAt = new Date().toISOString();
+  db.attempts.unshift({
+    id: nanoid(),
+    studentId: student.id,
+    dni: student.dni,
+    codigo: student.codigo,
+    mode: 'native_confirmation',
+    number: 1,
+    idempotencyKey: `native:${student.id}:${student.lastSuccessAt}`,
+    createdAt: student.lastSuccessAt,
+    status: 'success',
+    response: {
+      ok: true,
+      status: 'success',
+      payload: {
+        message: 'Ticket confirmado desde la app nativa/WebView.',
+        beforeCredits,
+        afterCredits: student.credits
+      }
+    }
+  });
+  if (db.attempts.length > 2000) db.attempts = db.attempts.slice(0, 2000);
   await saveDb();
   res.json({ ok: true, credits: student.credits, alreadyUsedToday: false });
 });
