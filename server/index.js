@@ -32,9 +32,12 @@ const defaultConfig = {
   targetSecond: Number(process.env.TARGET_SECOND || 0),
   targetMs: Number(process.env.TARGET_MS || 0),
   preFireMs: Number(process.env.PRE_FIRE_MS || 120000),
-  maxAttempts: Number(process.env.MAX_ATTEMPTS || 480),
+  postFireMs: Number(process.env.POST_FIRE_MS || 90000),
+  maxAttempts: Number(process.env.MAX_ATTEMPTS || 840),
   intervalMs: Number(process.env.INTERVAL_MS || 250),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 2000),
+  parallelAttemptsPerUser: Number(process.env.PARALLEL_ATTEMPTS_PER_USER || 4),
+  globalConcurrentAttempts: Number(process.env.GLOBAL_CONCURRENT_ATTEMPTS || 24),
   stopOnFirstSuccess: true,
   rateLimitPerUser: Number(process.env.RATE_LIMIT_PER_USER || 260),
   globalRateLimit: Number(process.env.GLOBAL_RATE_LIMIT || 2500),
@@ -66,6 +69,8 @@ let globalWindow = [];
 const perUserWindows = new Map();
 const queueTimers = new Map();
 const queueRunners = new Set();
+let activeOfficialAttempts = 0;
+const officialAttemptWaiters = [];
 
 async function loadDb() {
   try {
@@ -158,6 +163,38 @@ function checkSlidingWindow(key, limit) {
   if (key === 'global') globalWindow = fresh;
   else perUserWindows.set(key, fresh);
   return true;
+}
+
+function parallelAttemptsPerUser(config = db.config) {
+  const configured = Number(config.parallelAttemptsPerUser || 1);
+  return Math.max(1, Math.min(10, configured));
+}
+
+function globalConcurrentAttempts(config = db.config) {
+  const configured = Number(config.globalConcurrentAttempts || 1);
+  return Math.max(1, Math.min(100, configured));
+}
+
+async function acquireOfficialAttemptSlot(config = db.config) {
+  if (activeOfficialAttempts < globalConcurrentAttempts(config)) {
+    activeOfficialAttempts += 1;
+    return releaseOfficialAttemptSlot;
+  }
+
+  return new Promise((resolve) => {
+    officialAttemptWaiters.push(() => {
+      activeOfficialAttempts += 1;
+      resolve(releaseOfficialAttemptSlot);
+    });
+  });
+}
+
+function releaseOfficialAttemptSlot() {
+  activeOfficialAttempts = Math.max(0, activeOfficialAttempts - 1);
+  if (officialAttemptWaiters.length > 0 && activeOfficialAttempts < globalConcurrentAttempts()) {
+    const next = officialAttemptWaiters.shift();
+    if (next) next();
+  }
 }
 
 async function callOfficialApi({ dni, codigo, idempotencyKey, clientId, timeoutMs }) {
@@ -356,6 +393,18 @@ function queueAttemptTimeoutMs(config = db.config) {
   return Math.max(1200, Math.min(configured, 5000));
 }
 
+function queueMaxAttempts(config = db.config) {
+  const configured = Number(config.maxAttempts || 1);
+  if (!Number.isFinite(configured)) return 1;
+  return Math.max(1, Math.min(2000, configured));
+}
+
+function queuePostFireMs(config = db.config) {
+  const configured = Number(config.postFireMs || 0);
+  if (!Number.isFinite(configured)) return 0;
+  return Math.max(0, Math.min(5 * 60_000, configured));
+}
+
 function queueWindowStartDate(config = db.config) {
   const target = targetDate(config);
   return new Date(target.getTime() - Math.max(0, Number(config.preFireMs || 0)));
@@ -431,29 +480,28 @@ async function runQueueJob(jobId) {
   }
 
   const config = db.config;
-  const maxAttempts = Math.max(1, Math.min(600, Number(config.maxAttempts || 1)));
+  const maxAttempts = queueMaxAttempts(config);
   const intervalMs = Math.max(80, Math.min(10_000, Number(config.intervalMs || 400)));
   const timeoutMs = queueAttemptTimeoutMs(config);
+  const parallelLimit = parallelAttemptsPerUser(config);
+  const concurrentLimit = globalConcurrentAttempts(config);
+  const endAt = new Date(job.targetAt).getTime() + queuePostFireMs(config);
   job.status = 'running';
   job.startedAt = job.startedAt || new Date().toISOString();
   job.maxAttempts = maxAttempts;
   job.intervalMs = intervalMs;
+  job.parallelAttemptsPerUser = parallelLimit;
+  job.globalConcurrentAttempts = concurrentLimit;
+  job.postFireMs = queuePostFireMs(config);
   await saveDb();
 
   let lastResult = null;
-  for (let index = Number(job.attemptsRun || 0); index < maxAttempts; index += 1) {
-    if (!checkSlidingWindow('global', Number(config.globalRateLimit))) {
-      await finishQueueJob(job, 'rate_limit', { status: 'rate_limit', payload: { message: 'Limite global alcanzado en Railway.' } });
-      return;
-    }
-    if (!checkSlidingWindow(job.studentId, Number(config.rateLimitPerUser))) {
-      await finishQueueJob(job, 'rate_limit', { status: 'rate_limit', payload: { message: 'Limite por alumno alcanzado en Railway.' } });
-      return;
-    }
+  let terminal = false;
+  let launched = Number(job.attemptsRun || 0);
+  const pending = new Set();
+  const terminalStatuses = new Set(['sold_out', 'restricted', 'not_found', 'rate_limit']);
 
-    const idempotencyKey = `${job.studentId}:queue:${limaDayKey(job.targetAt)}:${index + 1}:${nanoid(8)}`;
-    db.usedIdempotencyKeys[idempotencyKey] = true;
-
+  async function recordAttempt(index, apiResult) {
     const attempt = {
       id: nanoid(),
       queueJobId: job.id,
@@ -462,27 +510,55 @@ async function runQueueJob(jobId) {
       codigo: job.codigo,
       mode: 'backend_queue',
       number: index + 1,
-      idempotencyKey,
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      response: null
+      idempotencyKey: apiResult.idempotencyKey,
+      createdAt: apiResult.createdAt,
+      status: apiResult.status,
+      response: apiResult
     };
 
-    const apiResult = await callOfficialTicketApi({ student: job, idempotencyKey, timeoutMs });
-    attempt.status = apiResult.status;
-    attempt.response = apiResult;
     db.attempts.unshift(attempt);
     if (db.attempts.length > 2000) db.attempts = db.attempts.slice(0, 2000);
 
-    job.attemptsRun = index + 1;
+    job.attemptsRun = Math.max(Number(job.attemptsRun || 0), index + 1);
     job.lastAttemptAt = new Date().toISOString();
     job.lastStatus = apiResult.status;
     job.lastMessage = apiResult.payload?.message || apiResult.status;
     job.result = apiResult;
     lastResult = apiResult;
     await saveDb();
+  }
 
+  async function launchAttempt(index) {
+    if (terminal) return;
+    const idempotencyKey = `${job.studentId}:queue:${limaDayKey(job.targetAt)}:${index + 1}:${nanoid(8)}`;
+    db.usedIdempotencyKeys[idempotencyKey] = true;
+    job.attemptsRun = Math.max(Number(job.attemptsRun || 0), index + 1);
+
+    let apiResult;
+    if (!checkSlidingWindow('global', Number(config.globalRateLimit))) {
+      apiResult = { ok: false, statusCode: 0, officialCode: -1, status: 'rate_limit', idempotencyKey, createdAt: new Date().toISOString(), payload: { message: 'Limite global alcanzado en Railway.' } };
+    } else if (!checkSlidingWindow(job.studentId, Number(config.rateLimitPerUser))) {
+      apiResult = { ok: false, statusCode: 0, officialCode: -1, status: 'rate_limit', idempotencyKey, createdAt: new Date().toISOString(), payload: { message: 'Limite por alumno alcanzado en Railway.' } };
+    } else {
+      const releaseSlot = await acquireOfficialAttemptSlot(config);
+      try {
+        if (terminal) return;
+        apiResult = await callOfficialTicketApi({ student: job, idempotencyKey, timeoutMs });
+        apiResult.idempotencyKey = idempotencyKey;
+        apiResult.createdAt = new Date().toISOString();
+      } finally {
+        releaseSlot();
+      }
+    }
+
+    if (!apiResult) return;
+    apiResult.idempotencyKey = apiResult.idempotencyKey || idempotencyKey;
+    apiResult.createdAt = apiResult.createdAt || new Date().toISOString();
+    await recordAttempt(index, apiResult);
+
+    if (terminal) return;
     if (apiResult.status === 'success') {
+      terminal = true;
       const alreadyUsedToday = Boolean(student.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
       if (!alreadyUsedToday) {
         student.credits = Math.max(0, Number(student.credits || 0) - 1);
@@ -492,17 +568,33 @@ async function runQueueJob(jobId) {
       return;
     }
 
-    if (['sold_out', 'restricted', 'not_found'].includes(apiResult.status)) {
+    if (terminalStatuses.has(apiResult.status)) {
+      terminal = true;
       await finishQueueJob(job, apiResult.status, apiResult);
-      return;
-    }
-
-    if (index < maxAttempts - 1) {
-      await sleep(apiResult.status === 'failed' ? Math.min(1200, intervalMs * 2) : intervalMs);
     }
   }
 
-  await finishQueueJob(job, lastResult?.status || 'failed', lastResult || { status: 'failed', payload: { message: 'Intentos de cola finalizados sin confirmacion.' } });
+  while (!terminal && launched < maxAttempts && Date.now() <= endAt) {
+    if (pending.size < parallelLimit) {
+      const attemptIndex = launched;
+      launched += 1;
+      const pendingAttempt = launchAttempt(attemptIndex).finally(() => pending.delete(pendingAttempt));
+      pending.add(pendingAttempt);
+    }
+    await sleep(intervalMs);
+  }
+
+  while (!terminal && pending.size > 0) {
+    await Promise.race([...pending]);
+  }
+
+  if (!terminal) {
+    const exhaustedByAttempts = launched >= maxAttempts;
+    const message = exhaustedByAttempts
+      ? 'Intentos maximos agotados sin confirmacion.'
+      : 'Ventana de disparo agotada sin confirmacion.';
+    await finishQueueJob(job, lastResult?.status || 'failed', lastResult || { status: 'failed', payload: { message } });
+  }
   } finally {
     queueRunners.delete(jobId);
   }
@@ -679,6 +771,9 @@ app.post('/api/queue/arm', async (req, res) => {
       existing.targetAt = target.toISOString();
       existing.maxAttempts = Number(db.config.maxAttempts || 0);
       existing.intervalMs = Number(db.config.intervalMs || 0);
+      existing.postFireMs = Number(db.config.postFireMs || 0);
+      existing.parallelAttemptsPerUser = Number(db.config.parallelAttemptsPerUser || 0);
+      existing.globalConcurrentAttempts = Number(db.config.globalConcurrentAttempts || 0);
       existing.lastStatus = 'queued';
       existing.lastMessage = 'Programacion actualizada con la configuracion vigente.';
       existing.updatedAt = new Date().toISOString();
@@ -702,6 +797,9 @@ app.post('/api/queue/arm', async (req, res) => {
     attemptsRun: 0,
     maxAttempts: Number(db.config.maxAttempts || 0),
     intervalMs: Number(db.config.intervalMs || 0),
+    postFireMs: Number(db.config.postFireMs || 0),
+    parallelAttemptsPerUser: Number(db.config.parallelAttemptsPerUser || 0),
+    globalConcurrentAttempts: Number(db.config.globalConcurrentAttempts || 0),
     lastStatus: 'queued',
     lastMessage: 'Cola Railway armada.',
     result: null
@@ -773,7 +871,7 @@ app.post('/admin/requests/:id/approve', requireAdmin, async (req, res) => {
 });
 
 app.post('/admin/config', requireAdmin, async (req, res) => {
-  const allowed = ['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'stopOnFirstSuccess', 'rateLimitPerUser', 'globalRateLimit', 'useServerQueue', 'officialTicketEndpoint', 'targetEndpoint', 'targetPage', 'targetMode', 'selectors'];
+  const allowed = ['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'postFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'parallelAttemptsPerUser', 'globalConcurrentAttempts', 'stopOnFirstSuccess', 'rateLimitPerUser', 'globalRateLimit', 'useServerQueue', 'officialTicketEndpoint', 'targetEndpoint', 'targetPage', 'targetMode', 'selectors'];
   for (const key of allowed) {
     if (req.body[key] !== undefined) db.config[key] = req.body[key];
   }

@@ -433,8 +433,10 @@ function StudentApp({ onSwitchRole }) {
           <div className="metaGrid">
             <span>Servidor</span><strong>{serverOffset >= 0 ? '+' : ''}{serverOffset} ms</strong>
             <span>Pre-disparo</span><strong>{config?.config?.preFireMs ?? '-'} ms</strong>
+            <span>Post-disparo</span><strong>{config?.config?.postFireMs ?? '-'} ms</strong>
             <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
             <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
+            <span>Paralelos</span><strong>{config?.config?.parallelAttemptsPerUser ?? '-'}</strong>
           </div>
           <button className="primary" disabled={busy || !isAuthorized} onClick={generateWithPrefire}>
             <Activity size={18} /> Generar con disparos
@@ -547,9 +549,12 @@ function AdminApp({ onSwitchRole }) {
       targetSecond: Number(next.targetSecond),
       targetMs: Number(next.targetMs),
       preFireMs: Number(next.preFireMs),
+      postFireMs: Number(next.postFireMs),
       maxAttempts: Number(next.maxAttempts),
       intervalMs: Number(next.intervalMs),
       requestTimeoutMs: Number(next.requestTimeoutMs),
+      parallelAttemptsPerUser: Number(next.parallelAttemptsPerUser),
+      globalConcurrentAttempts: Number(next.globalConcurrentAttempts),
       rateLimitPerUser: Number(next.rateLimitPerUser),
       globalRateLimit: Number(next.globalRateLimit),
       stopOnFirstSuccess: next.stopOnFirstSuccess === 'on',
@@ -653,6 +658,7 @@ function QueueJobs({ jobs }) {
           <span>{queueStatusLabel(job.status)}</span>
           <span>{job.attemptsRun || 0}/{job.maxAttempts || '-'}</span>
           <small>{queueMessage(job)}</small>
+          <small>Paralelos: {job.parallelAttemptsPerUser || '-'} | Post: {job.postFireMs || 0} ms</small>
         </div>
       ))}
     </main>
@@ -665,7 +671,7 @@ function ConfigForm({ config, saveConfig }) {
     <main className="panel">
       <h2>Configuracion</h2>
       <form className="configGrid" onSubmit={saveConfig}>
-        {['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'rateLimitPerUser', 'globalRateLimit'].map((key) => (
+        {['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'postFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'parallelAttemptsPerUser', 'globalConcurrentAttempts', 'rateLimitPerUser', 'globalRateLimit'].map((key) => (
           <label className="field" key={key}><span>{key}</span><input name={key} type="number" defaultValue={config[key]} /></label>
         ))}
         <label className="field"><span>Modo</span><select name="targetMode" defaultValue={config.targetMode}><option value="api">api</option><option value="webview">webview</option></select></label>
