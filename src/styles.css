@@ -32,6 +32,46 @@ body {
     var(--bg);
 }
 
+@keyframes screenIn {
+  from {
+    opacity: .88;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes floatIn {
+  from {
+    opacity: .9;
+    transform: translateY(14px) scale(.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes drift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(12px, -18px, 0);
+  }
+}
+
+@keyframes pulseLive {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, .35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(74, 222, 128, 0);
+  }
+}
+
 button, input, select {
   font: inherit;
 }
@@ -64,6 +104,7 @@ a {
   width: min(1180px, calc(100% - 28px));
   margin: 0 auto;
   padding: 20px 0 44px;
+  animation: screenIn .28s ease-out;
 }
 
 .topbar {
@@ -167,6 +208,7 @@ a {
   border-radius: 8px;
   padding: 18px;
   box-shadow: var(--shadow);
+  animation: floatIn .32s ease-out both;
 }
 
 .sectionTitle {
@@ -275,7 +317,10 @@ a {
   margin: 18px 0;
   color: #fff;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--navy), var(--blue) 54%, var(--teal));
+  background:
+    radial-gradient(circle at 85% 18%, rgba(255,255,255,.18), transparent 30%),
+    linear-gradient(135deg, #123a5e, #1976d2 52%, #0ca58f);
+  box-shadow: 0 14px 28px rgba(30, 110, 234, .18);
 }
 
 .countdownWrap span {
@@ -291,7 +336,7 @@ a {
   height: 8px;
   margin-top: 12px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #f4d35e 74%, rgba(255,255,255,.24) 74%);
+  background: linear-gradient(90deg, #f4d35e 66%, rgba(255,255,255,.24) 66%);
 }
 
 .countdown {
@@ -299,8 +344,9 @@ a {
   font-variant-numeric: tabular-nums;
   font-size: clamp(2rem, 7vw, 3.8rem);
   font-weight: 950;
-  color: inherit;
+  color: #ff6b8a;
   letter-spacing: 0;
+  text-shadow: 0 2px 12px rgba(255, 107, 138, .24);
 }
 
 .metaGrid {
@@ -504,17 +550,54 @@ a {
   font-size: 1.45rem;
 }
 
+.adminHeroChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.adminHeroChips em {
+  min-height: 27px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #dcfff1;
+  background: rgba(255, 255, 255, .16);
+  font-size: .76rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
+.adminStats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .metric {
   min-height: 104px;
   color: #fff;
   border: 0;
+  position: relative;
+  overflow: hidden;
   background: linear-gradient(135deg, var(--blue), var(--sky));
+}
+
+.metric::after {
+  content: "";
+  position: absolute;
+  right: -18px;
+  bottom: -18px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.16);
 }
 
 .metric.tone1 { background: linear-gradient(135deg, var(--teal), #12bf7c); }
@@ -639,7 +722,7 @@ a {
   align-items: center;
 }
 
-.authPage, .rolePage {
+.authPage {
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -652,22 +735,75 @@ a {
   gap: 14px;
 }
 
+.rolePage {
+  min-height: 100vh;
+  position: relative;
+  display: grid;
+  place-items: stretch;
+  overflow: hidden;
+  color: #fff;
+  background:
+    radial-gradient(circle at 78% 8%, rgba(41, 178, 203, .34), transparent 22%),
+    linear-gradient(180deg, #0d2236 0%, #103452 38%, #0c3d6e 68%, #0a4a3a 100%);
+}
+
+.rolePage::before,
+.rolePage::after,
+.roleStars {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.rolePage::before {
+  opacity: .72;
+  background:
+    radial-gradient(circle at 17% 22%, rgba(255,255,255,.95) 0 1px, transparent 2px),
+    radial-gradient(circle at 82% 16%, rgba(255,255,255,.8) 0 1px, transparent 2px),
+    radial-gradient(circle at 51% 35%, rgba(255,255,255,.75) 0 1px, transparent 2px),
+    radial-gradient(circle at 22% 61%, rgba(255,255,255,.85) 0 1px, transparent 2px),
+    radial-gradient(circle at 74% 74%, rgba(255,255,255,.8) 0 1px, transparent 2px),
+    radial-gradient(circle at 40% 82%, rgba(255,255,255,.75) 0 1px, transparent 2px);
+  animation: drift 8s ease-in-out infinite;
+}
+
+.rolePage::after {
+  opacity: .45;
+  background:
+    linear-gradient(102deg, transparent 0 18%, rgba(255,255,255,.32) 18% 18.4%, transparent 18.4% 100%),
+    linear-gradient(24deg, transparent 0 34%, rgba(255,255,255,.24) 34% 34.3%, transparent 34.3% 100%),
+    linear-gradient(148deg, transparent 0 63%, rgba(255,255,255,.22) 63% 63.3%, transparent 63.3% 100%);
+}
+
+.roleStars {
+  background:
+    radial-gradient(circle at 64% 2%, rgba(255,255,255,.18), transparent 16%),
+    radial-gradient(circle at 90% 18%, rgba(12,165,143,.22), transparent 18%);
+}
+
 .roleHero {
-  width: min(440px, 100%);
-  min-height: 560px;
+  width: min(100%, 430px);
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 16px;
-  padding: 26px;
+  padding: max(22px, env(safe-area-inset-top)) 20px 28px;
   color: #fff;
-  border-radius: 18px;
-  background: linear-gradient(135deg, var(--navy), var(--blue) 52%, var(--teal));
-  box-shadow: 0 24px 60px rgba(16, 52, 82, .22);
+  background: transparent;
+  box-shadow: none;
+  animation: screenIn .36s ease-out;
 }
 
 .roleHeroTop {
-  margin-bottom: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 110px;
 }
 
 .roleLogo {
@@ -678,6 +814,30 @@ a {
   border: 1px solid rgba(255,255,255,.34);
   border-radius: 8px;
   background: rgba(255,255,255,.16);
+  backdrop-filter: blur(8px);
+}
+
+.liveDot {
+  min-height: 25px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #d9fff2;
+  background: rgba(255,255,255,.16);
+  font-size: .72rem;
+  font-weight: 900;
+  backdrop-filter: blur(8px);
+}
+
+.liveDot::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: pulseLive 1.4s ease-in-out infinite;
 }
 
 .roleHero .eyebrow {
@@ -688,32 +848,67 @@ a {
   margin: 0;
   font-size: 2rem;
   line-height: 1.08;
+  max-width: 310px;
 }
 
 .roleGrid {
   display: grid;
   gap: 12px;
+  margin-top: 2px;
 }
 
 .roleButton {
-  min-height: 76px;
-  justify-content: flex-start;
-  padding: 16px;
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  align-items: center;
+  justify-content: stretch;
+  padding: 14px;
   color: var(--ink);
-  background: rgba(255, 255, 255, .9);
-  box-shadow: 0 10px 26px rgba(16, 52, 82, .12);
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 12px 32px rgba(0,0,0,.28);
+  backdrop-filter: blur(8px);
+  animation: floatIn .4s ease-out both;
 }
 
-.roleButton span {
+.roleButton:nth-child(2) {
+  animation-delay: .08s;
+}
+
+.roleIconTile {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--blue), var(--teal));
+}
+
+.roleIconTile.admin {
+  background: linear-gradient(135deg, var(--navy), #3f6fa6);
+}
+
+.roleCopy {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+}
+
+.roleCopy strong {
   display: block;
   font-size: 1.05rem;
   font-weight: 950;
 }
 
-.roleButton small {
+.roleCopy small {
   display: block;
   color: var(--muted);
   font-weight: 700;
+}
+
+.roleArrow {
+  color: #708699;
 }
 
 @media (max-width: 860px) {
@@ -731,6 +926,10 @@ a {
   }
 
   .cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adminStats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -756,8 +955,16 @@ a {
     grid-template-columns: 1fr;
   }
 
-  .twoCols, .configGrid, .cards {
+  .twoCols, .configGrid {
     grid-template-columns: 1fr;
+  }
+
+  .cards:not(.adminStats) {
+    grid-template-columns: 1fr;
+  }
+
+  .adminStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .barRow {

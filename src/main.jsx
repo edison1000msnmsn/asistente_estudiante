@@ -212,7 +212,13 @@ function StudentResultVisual({ outcome, showRequestAccess, busy, onRequestAccess
 function StudentApp({ onSwitchRole }) {
   const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
   const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('student:status') || 'null');
+    } catch {
+      return null;
+    }
+  });
   const [config, setConfig] = useState(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [nowTick, setNowTick] = useState(Date.now());
@@ -221,6 +227,8 @@ function StudentApp({ onSwitchRole }) {
   const [history, setHistory] = useState(JSON.parse(localStorage.getItem('student:history') || '[]'));
   const [attemptLogs, setAttemptLogs] = useState([]);
   const [queueJob, setQueueJobState] = useState(readStoredQueueJob);
+  const [autoCheckAllowed] = useState(() => Boolean(localStorage.getItem('student:dni') && localStorage.getItem('student:codigo')));
+  const [autoCheckedInitial, setAutoCheckedInitial] = useState(false);
 
   const id = useMemo(() => studentId(dni, codigo), [dni, codigo]);
   const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
@@ -241,6 +249,12 @@ function StudentApp({ onSwitchRole }) {
     localStorage.setItem('student:dni', dni);
     localStorage.setItem('student:codigo', codigo);
   }, [dni, codigo]);
+
+  useEffect(() => {
+    if (!autoCheckAllowed || autoCheckedInitial || !dni || !codigo) return;
+    setAutoCheckedInitial(true);
+    checkStatus({ keepResult: true });
+  }, [autoCheckAllowed, autoCheckedInitial, dni, codigo]);
 
   useEffect(() => {
     if (!queueJob?.id || !ACTIVE_QUEUE_STATUSES.has(queueJob.status) || (queueJob.studentId && queueJob.studentId !== id)) return undefined;
@@ -300,7 +314,9 @@ function StudentApp({ onSwitchRole }) {
     if (!keepResult) setResult(null);
     try {
       const data = await api(`/api/student/${encodeURIComponent(id)}/status`);
-      setStatus({ ...data, id });
+      const nextStatus = { ...data, id };
+      setStatus(nextStatus);
+      localStorage.setItem('student:status', JSON.stringify(nextStatus));
       await refreshConfig();
     } catch (error) {
       setResult({ ok: false, message: error.message });
@@ -480,6 +496,7 @@ function StudentApp({ onSwitchRole }) {
 
   const sameStudentStatus = status?.id === id;
   const studentCredits = sameStudentStatus ? Number(status?.student?.credits ?? 0) : null;
+  const showCheckStatus = Boolean(dni && codigo && !sameStudentStatus);
   const showRequestAccess = Boolean(sameStudentStatus && !status?.authorized && Number(studentCredits || 0) <= 0);
   const outcome = buildStudentOutcome({ result, queueJob, status, id });
   const OutcomeIcon = outcome.icon;
@@ -519,7 +536,7 @@ function StudentApp({ onSwitchRole }) {
           </div>
           <p className="fieldHint">La letra del codigo funciona igual en mayuscula o minuscula.</p>
           <div className="actions">
-            <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>
+            {showCheckStatus && <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>}
             {showRequestAccess && <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar cupos</button>}
           </div>
           {status?.id === id && (
@@ -730,7 +747,7 @@ function AdminApp({ onSwitchRole }) {
       </nav>
       {message && <p className="notice">{message}</p>}
 
-      {tab === 'dashboard' && <Dashboard stats={data.stats} />}
+      {tab === 'dashboard' && <Dashboard stats={data.stats} config={data.config} />}
       {tab === 'students' && <Students students={data.students} setCredits={setCredits} />}
       {tab === 'requests' && <Requests requests={data.requests} approve={approve} />}
       {tab === 'queue' && <QueueJobs jobs={data.queue} />}
@@ -740,7 +757,7 @@ function AdminApp({ onSwitchRole }) {
   );
 }
 
-function Dashboard({ stats }) {
+function Dashboard({ stats, config }) {
   const items = [
     ['Alumnos', stats?.students ?? 0],
     ['Solicitudes pendientes', stats?.pendingRequests ?? 0],
@@ -762,6 +779,11 @@ function Dashboard({ stats }) {
         <div>
           <span>Estado actual</span>
           <strong>Operacion lista</strong>
+          <div className="adminHeroChips">
+            <em>{config?.useServerQueue ? 'Cola activa' : 'Cola local'}</em>
+            <em>{config?.targetMode === 'api' ? 'API conectada' : 'WebView activo'}</em>
+            <em>{config?.parallelAttemptsPerUser ?? '-'} paralelos</em>
+          </div>
         </div>
         <Activity size={34} />
       </section>
@@ -838,22 +860,30 @@ function ConfigForm({ config, saveConfig }) {
 function RoleSelection({ onSelect }) {
   return (
     <div className="rolePage">
+      <div className="roleStars" aria-hidden="true" />
       <section className="roleHero">
         <div className="roleHeroTop">
           <span className="roleLogo"><School size={28} /></span>
+          <span className="liveDot">Sistema activo</span>
         </div>
         <p className="eyebrow">Registro automatico</p>
         <h1>Asistente de estudiantes</h1>
         <div className="roleGrid">
           <button className="roleButton" onClick={() => onSelect('student')}>
-            <School size={30} />
-            <span>Estudiante</span>
-            <small>Generar y verificar ticket.</small>
+            <span className="roleIconTile"><School size={22} /></span>
+            <span className="roleCopy">
+              <strong>Estudiante</strong>
+              <small>Generar y verificar ticket.</small>
+            </span>
+            <Ticket className="roleArrow" size={20} />
           </button>
           <button className="roleButton" onClick={() => onSelect('admin')}>
-            <ShieldCheck size={30} />
-            <span>Administrador</span>
-            <small>Control, cupos y diagnostico.</small>
+            <span className="roleIconTile admin"><ShieldCheck size={22} /></span>
+            <span className="roleCopy">
+              <strong>Administrador</strong>
+              <small>Control, cupos y diagnostico.</small>
+            </span>
+            <ShieldCheck className="roleArrow" size={20} />
           </button>
         </div>
       </section>
