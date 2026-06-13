@@ -554,7 +554,7 @@ function StudentApp({ onSwitchRole }) {
           <strong>{isAuthorized ? 'Listo para generar' : 'Verifica tu cupo'}</strong>
           <span>{isAuthorized ? 'Cupo activo y hora sincronizada' : 'Consulta tu estado antes de armar la cola'}</span>
         </div>
-        <div className="heroBadge">{sameStudentStatus ? (isAuthorized ? 'Acceso activo' : 'Sin cupo') : 'Sin verificar'}</div>
+        <div className="heroBadge">{sameStudentStatus ? `${studentCredits ?? 0} cupos` : 'Sin verificar'}</div>
       </section>
 
       <main className="studentGrid">
@@ -589,13 +589,6 @@ function StudentApp({ onSwitchRole }) {
           <button disabled={busy || !isAuthorized} onClick={() => runAttempts({ scheduled: false })}>
             <Ticket size={18} /> Verificar ticket
           </button>
-          {queueJob && queueJob.studentId === id && ACTIVE_QUEUE_STATUSES.has(queueJob.status) && (
-            <div className={`queueBox ${queueJob.status === 'running' ? 'running' : 'active'}`}>
-              <strong>Cola activa</strong>
-              <span>{studentQueueMessage(queueJob)}</span>
-              <small>{queueJob.status === 'running' ? 'Estado: generando ahora' : 'Estado: preparado'}</small>
-            </div>
-          )}
         </section>
 
         <section className="panel">
