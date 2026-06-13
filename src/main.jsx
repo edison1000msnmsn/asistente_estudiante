@@ -117,6 +117,98 @@ function studentQueueMessage(job) {
   return queueMessage(job);
 }
 
+function buildStudentOutcome({ result, queueJob, status, id }) {
+  const sameStudent = status?.id === id;
+  const credits = Number(status?.student?.credits ?? 0);
+  if (queueJob?.status === 'success' || result?.status === 'success' || result?.job?.status === 'success') {
+    return {
+      tone: 'success',
+      icon: CheckCircle2,
+      title: 'Felicidades, obtuviste cupo para hoy',
+      message: 'Ticket confirmado. Guarda tu comprobante y presentalo en el comedor.'
+    };
+  }
+  if (queueJob?.status === 'sold_out' || result?.status === 'sold_out' || result?.job?.status === 'sold_out') {
+    return {
+      tone: 'danger',
+      icon: Ticket,
+      title: 'Upps, cupos agotados',
+      message: 'La API oficial respondio que ya no quedan cupos disponibles.'
+    };
+  }
+  if (queueJob?.status === 'restricted' || result?.status === 'restricted') {
+    return {
+      tone: 'danger',
+      icon: XCircle,
+      title: 'Alumno restringido',
+      message: 'La web oficial no permitio generar ticket para estos datos.'
+    };
+  }
+  if (queueJob?.status === 'not_found' || result?.status === 'not_found') {
+    return {
+      tone: 'danger',
+      icon: XCircle,
+      title: 'Alumno no encontrado',
+      message: 'Revisa DNI y codigo. La letra del codigo puede ir en mayuscula o minuscula.'
+    };
+  }
+  if (sameStudent && !status?.authorized && credits <= 0) {
+    return {
+      tone: 'empty',
+      icon: Users,
+      title: 'Sin cupos asignados',
+      message: 'Solicita cupos al administrador para activar el registro automatico.'
+    };
+  }
+  if (queueJob?.status === 'queued') {
+    return {
+      tone: 'wait',
+      icon: Clock3,
+      title: 'Preparado para las 7:00',
+      message: 'La cola quedo armada. No necesitas volver a presionar.'
+    };
+  }
+  if (queueJob?.status === 'running') {
+    return {
+      tone: 'info',
+      icon: Activity,
+      title: 'Generando ticket',
+      message: 'Railway esta disparando intentos controlados contra la API oficial.'
+    };
+  }
+  if (result?.message) {
+    return {
+      tone: result.ok ? 'success' : 'danger',
+      icon: result.ok ? CheckCircle2 : XCircle,
+      title: result.ok ? 'Operacion completada' : 'Sin confirmacion',
+      message: result.message
+    };
+  }
+  return {
+    tone: 'idle',
+    icon: Clock3,
+    title: 'Sin ejecuciones todavia',
+    message: 'Verifica tu cupo o arma la cola cuando corresponda.'
+  };
+}
+
+function StudentResultVisual({ outcome, showRequestAccess, busy, onRequestAccess, onSaveReceipt, hasResult }) {
+  const Icon = outcome.icon;
+  return (
+    <div className={`studentOutcome ${outcome.tone}`}>
+      <div className="outcomeIcon"><Icon size={24} /></div>
+      <div className="outcomeText">
+        <strong>{outcome.title}</strong>
+        <span>{outcome.message}</span>
+        <div className="outcomeActions">
+          {showRequestAccess && <button disabled={busy} onClick={onRequestAccess}><Send size={17} /> Solicitar cupos</button>}
+          <button disabled={!hasResult} onClick={onSaveReceipt}><Save size={17} /> Guardar comprobante</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StudentApp({ onSwitchRole }) {
   const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
   const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
@@ -386,12 +478,18 @@ function StudentApp({ onSwitchRole }) {
     URL.revokeObjectURL(url);
   }
 
+  const sameStudentStatus = status?.id === id;
+  const studentCredits = sameStudentStatus ? Number(status?.student?.credits ?? 0) : null;
+  const showRequestAccess = Boolean(sameStudentStatus && !status?.authorized && Number(studentCredits || 0) <= 0);
+  const outcome = buildStudentOutcome({ result, queueJob, status, id });
+  const OutcomeIcon = outcome.icon;
+
   return (
     <div className="page">
-      <header className="topbar">
+      <header className="topbar studentTopbar">
         <div>
           <p className="eyebrow">Acceso autorizado</p>
-          <h1>Asistente de estudiantes</h1>
+          <h1>Estudiante</h1>
         </div>
         <div className="topActions">
           <button className="backButton" onClick={onSwitchRole}><ArrowLeft size={18} /> Regresar</button>
@@ -401,19 +499,28 @@ function StudentApp({ onSwitchRole }) {
         </div>
       </header>
 
+      <section className="studentHero">
+        <div>
+          <strong>{isAuthorized ? 'Listo para generar' : 'Verifica tu cupo'}</strong>
+          <span>{isAuthorized ? 'Cupo activo y hora sincronizada' : 'Consulta tu estado antes de armar la cola'}</span>
+        </div>
+        <div className="heroBadge">{sameStudentStatus ? `${studentCredits ?? 0} cupos` : 'Sin verificar'}</div>
+      </section>
+
       <main className="studentGrid">
         <section className="panel mainPanel">
           <div className="sectionTitle">
             <ShieldCheck />
-            <h2>Datos del alumno</h2>
+            <h2>Datos</h2>
           </div>
           <div className="twoCols">
             <Field label="DNI" value={dni} onChange={setDni} placeholder="Ej. 70123456" />
             <Field label="Codigo estudiante" value={codigo} onChange={setCodigo} placeholder="Ej. 2020123456" />
           </div>
+          <p className="fieldHint">La letra del codigo funciona igual en mayuscula o minuscula.</p>
           <div className="actions">
             <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>
-            <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar acceso</button>
+            {showRequestAccess && <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar cupos</button>}
           </div>
           {status?.id === id && (
             <div className="statusLine">
@@ -429,7 +536,11 @@ function StudentApp({ onSwitchRole }) {
             <Clock3 />
             <h2>Hora objetivo</h2>
           </div>
-          <div className="countdown">{config ? formatCountdown(countdownMs) : '--:--:--.---'}</div>
+          <div className="countdownWrap">
+            <span>Objetivo 07:00:00</span>
+            <div className="countdown">{config ? formatCountdown(countdownMs) : '--:--:--.---'}</div>
+            <i />
+          </div>
           <div className="metaGrid">
             <span>Servidor</span><strong>{serverOffset >= 0 ? '+' : ''}{serverOffset} ms</strong>
             <span>Pre-disparo</span><strong>{config?.config?.preFireMs ?? '-'} ms</strong>
@@ -442,7 +553,7 @@ function StudentApp({ onSwitchRole }) {
             <Activity size={18} /> Generar con disparos
           </button>
           <button disabled={busy || !isAuthorized} onClick={() => runAttempts({ scheduled: false })}>
-            <Ticket size={18} /> Verificar ahora
+            <Ticket size={18} /> Verificar ticket
           </button>
           {queueJob && queueJob.studentId === id && (
             <div className={`queueBox ${queueJob.status === 'success' ? 'ok' : ''}`}>
@@ -452,7 +563,6 @@ function StudentApp({ onSwitchRole }) {
               <small>Hora objetivo: {queueJob.targetAt ? new Date(queueJob.targetAt).toLocaleTimeString() : '-'}</small>
             </div>
           )}
-          {config && <p className="hint">Cuando aparece Preparado, el registro automatico ya quedo programado. Verificar ahora sirve para consultar el ticket despues de la hora o ver si ya no hay cupos.</p>}
           {attemptLogs.length > 0 && (
             <details className="debugDetails">
               <summary>Detalles tecnicos</summary>
@@ -465,13 +575,23 @@ function StudentApp({ onSwitchRole }) {
 
         <section className="panel">
           <div className="sectionTitle">
-            {result?.ok ? <CheckCircle2 /> : <XCircle />}
+            <OutcomeIcon />
             <h2>Resultado</h2>
           </div>
-          <pre className="resultBox">{result ? JSON.stringify(result, null, 2) : 'Sin ejecuciones todavia.'}</pre>
-          <div className="actions">
-            <button disabled={!result} onClick={saveReceipt}><Save size={18} /> Guardar comprobante</button>
-          </div>
+          <StudentResultVisual
+            outcome={outcome}
+            showRequestAccess={showRequestAccess}
+            busy={busy}
+            onRequestAccess={requestAccess}
+            onSaveReceipt={saveReceipt}
+            hasResult={Boolean(result)}
+          />
+          {result && (
+            <details className="debugDetails resultDetails">
+              <summary>Detalle tecnico</summary>
+              <pre className="resultBox">{JSON.stringify(result, null, 2)}</pre>
+            </details>
+          )}
         </section>
 
         <section className="panel">
@@ -631,7 +751,33 @@ function Dashboard({ stats }) {
     ['Cola exitosa', stats?.queueSuccess ?? 0],
     ['Cupos disponibles', stats?.creditsAvailable ?? 0]
   ];
-  return <main className="cards">{items.map(([label, value]) => <section className="metric" key={label}><span>{label}</span><strong>{value}</strong></section>)}</main>;
+  const success = Number(stats?.success ?? 0);
+  const failed = Number(stats?.failed ?? 0);
+  const total = Math.max(1, success + failed);
+  const successRate = Math.round((success / total) * 100);
+  const failRate = Math.round((failed / total) * 100);
+  return (
+    <main className="dashboard">
+      <section className="adminHero">
+        <div>
+          <span>Estado actual</span>
+          <strong>Operacion lista</strong>
+        </div>
+        <Activity size={34} />
+      </section>
+      <section className="cards adminStats">
+        {items.map(([label, value], index) => <section className={`metric tone${index % 4}`} key={label}><span>{label}</span><strong>{value}</strong></section>)}
+      </section>
+      <section className="panel diagnosticPanel">
+        <div className="sectionTitle"><Activity /><h2>Diagnostico rapido</h2></div>
+        <div className="barList">
+          <div className="barRow"><span>Exitos</span><i><b style={{ width: `${successRate}%` }} /></i><strong>{successRate}%</strong></div>
+          <div className="barRow"><span>Fallos</span><i><b style={{ width: `${failRate}%` }} /></i><strong>{failRate}%</strong></div>
+          <div className="barRow"><span>Cola activa</span><i><b style={{ width: `${Math.min(100, Number(stats?.queueActive ?? 0) * 25)}%` }} /></i><strong>{stats?.queueActive ?? 0}</strong></div>
+        </div>
+      </section>
+    </main>
+  );
 }
 
 function Students({ students, setCredits }) {
@@ -656,7 +802,7 @@ function QueueJobs({ jobs }) {
           <span>{new Date(job.queuedAt).toLocaleString()}</span>
           <span>{job.dni}</span>
           <span>{queueStatusLabel(job.status)}</span>
-          <span>{job.attemptsRun || 0}/{job.maxAttempts || '-'}</span>
+          <span>Intentos usados: {job.attemptsRun || 0} de {job.maxAttempts || '-'}</span>
           <small>{queueMessage(job)}</small>
           <small>Paralelos: {job.parallelAttemptsPerUser || '-'} | Post: {job.postFireMs || 0} ms</small>
         </div>
@@ -693,18 +839,21 @@ function RoleSelection({ onSelect }) {
   return (
     <div className="rolePage">
       <section className="roleHero">
-        <p className="eyebrow">Seleccion de acceso</p>
+        <div className="roleHeroTop">
+          <span className="roleLogo"><School size={28} /></span>
+        </div>
+        <p className="eyebrow">Registro automatico</p>
         <h1>Asistente de estudiantes</h1>
         <div className="roleGrid">
           <button className="roleButton" onClick={() => onSelect('student')}>
             <School size={30} />
             <span>Estudiante</span>
-            <small>Solicitar cupo, sincronizar hora y generar tiket.</small>
+            <small>Generar y verificar ticket.</small>
           </button>
           <button className="roleButton" onClick={() => onSelect('admin')}>
             <ShieldCheck size={30} />
             <span>Administrador</span>
-            <small>Gestionar alumnos, solicitudes, cupos e intentos.</small>
+            <small>Control, cupos y diagnostico.</small>
           </button>
         </div>
       </section>

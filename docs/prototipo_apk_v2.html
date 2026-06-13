@@ -1,0 +1,1226 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prototipo APK v2 - Asistente de estudiantes</title>
+  <style>
+    :root {
+      --bg: #eef5f8;
+      --surface: #ffffff;
+      --soft: #f4f9fb;
+      --ink: #102333;
+      --muted: #5d7181;
+      --line: #d6e4eb;
+      --navy: #103452;
+      --blue: #1e6eea;
+      --sky: #20a9e8;
+      --teal: #0ca58f;
+      --green: #0f8f67;
+      --amber: #d88918;
+      --red: #c9362b;
+      --success-bg: #dcf8ed;
+      --info-bg: #e5f4ff;
+      --warn-bg: #fff1cf;
+      --danger-bg: #ffe4e0;
+      --shadow: 0 18px 42px rgba(16, 52, 82, .16);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        linear-gradient(140deg, rgba(30, 110, 234, .14), rgba(12, 165, 143, .18) 52%, rgba(216, 137, 24, .08)),
+        #edf5f8;
+    }
+
+    button {
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .prototype-shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 18px 44px;
+    }
+
+    .prototype-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .prototype-header h1 {
+      margin: 0;
+      font-size: 26px;
+      letter-spacing: 0;
+    }
+
+    .mode-switch {
+      display: flex;
+      gap: 8px;
+      padding: 6px;
+      border: 1px solid rgba(255, 255, 255, .72);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .66);
+      box-shadow: 0 10px 24px rgba(16, 52, 82, .1);
+      backdrop-filter: blur(12px);
+    }
+
+    .mode-switch button {
+      min-height: 38px;
+      padding: 0 14px;
+      border-radius: 7px;
+      color: var(--navy);
+      background: transparent;
+      font-weight: 800;
+    }
+
+    .mode-switch button.active {
+      color: #fff;
+      background: linear-gradient(135deg, var(--navy), var(--teal));
+    }
+
+    .canvas {
+      display: grid;
+      grid-template-columns: minmax(330px, 410px) minmax(420px, 1fr);
+      align-items: start;
+      gap: 24px;
+    }
+
+    .phone {
+      width: min(100%, 410px);
+      min-height: 830px;
+      border: 10px solid #0b1720;
+      border-radius: 30px;
+      background: var(--bg);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .phone-status {
+      height: 27px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      color: #fff;
+      background: #0b1720;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .screen {
+      display: none;
+      height: 803px;
+      min-height: 803px;
+      overflow-y: auto;
+      padding: 16px 15px 28px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.56) 0%, rgba(238,245,248,.94) 46%),
+        var(--bg);
+    }
+
+    .screen.active { display: block; }
+
+    svg.icon {
+      width: 21px;
+      height: 21px;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      flex: 0 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      color: rgba(16, 52, 82, .68);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .app-hero {
+      min-height: 250px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px;
+      margin: -16px -15px 16px;
+      color: #fff;
+      background:
+        linear-gradient(135deg, rgba(13, 51, 83, .98), rgba(22, 118, 214, .95) 45%, rgba(8, 168, 144, .96));
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, .34);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .16);
+      color: #fff;
+      backdrop-filter: blur(10px);
+    }
+
+    .brand-title {
+      margin-top: 48px;
+    }
+
+    .brand-title h2 {
+      font-size: 30px;
+      max-width: 290px;
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 16px;
+    }
+
+    .status-mini {
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.28);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.13);
+    }
+
+    .status-mini span {
+      display: block;
+      opacity: .78;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .status-mini strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 15px;
+    }
+
+    .role-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .role-card {
+      display: grid;
+      grid-template-columns: 52px 1fr 32px;
+      align-items: center;
+      gap: 13px;
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,.76);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: rgba(255, 255, 255, .88);
+      box-shadow: 0 10px 26px rgba(16, 52, 82, .10);
+    }
+
+    .role-card strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 18px;
+    }
+
+    .role-card small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .icon-tile {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: #fff;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      box-shadow: 0 10px 18px rgba(12, 165, 143, .24);
+    }
+
+    .role-card:nth-child(2) .icon-tile {
+      background: linear-gradient(135deg, var(--navy), #3f6fa6);
+      box-shadow: 0 10px 18px rgba(16, 52, 82, .24);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .icon-button {
+      width: 45px;
+      height: 45px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: var(--navy);
+      background: #dfeaf3;
+      font-weight: 900;
+    }
+
+    .card {
+      border: 1px solid rgba(255, 255, 255, .86);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .92);
+      box-shadow: 0 10px 26px rgba(16, 52, 82, .10);
+    }
+
+    .section {
+      padding: 15px;
+      margin-bottom: 13px;
+    }
+
+    .student-summary {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      margin-bottom: 13px;
+      color: #fff;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--navy), var(--teal));
+      box-shadow: 0 14px 28px rgba(12, 165, 143, .18);
+    }
+
+    .student-summary strong {
+      display: block;
+      font-size: 18px;
+    }
+
+    .student-summary span {
+      display: block;
+      margin-top: 3px;
+      opacity: .82;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .summary-badge {
+      min-width: 76px;
+      padding: 9px 10px;
+      border-radius: var(--radius);
+      color: #064f3f;
+      background: #d7fff0;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 13px;
+    }
+
+    .title-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .glyph {
+      width: 36px;
+      height: 36px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: var(--navy);
+      background: #e8f2f8;
+      font-weight: 900;
+    }
+
+    .field {
+      display: block;
+      margin-bottom: 11px;
+    }
+
+    .field span {
+      display: block;
+      margin-bottom: 6px;
+      color: #405667;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .field-hint {
+      display: block;
+      margin-top: -4px;
+      margin-bottom: 10px;
+      color: #6b7f8f;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .input {
+      min-height: 51px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      border: 1px solid #cddde7;
+      border-radius: var(--radius);
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 18px;
+      font-weight: 650;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 12px;
+    }
+
+    .btn {
+      min-height: 51px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      color: var(--navy);
+      background: #dce8f1;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--teal), var(--blue));
+      box-shadow: 0 12px 22px rgba(12, 165, 143, .22);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      color: #075f47;
+      background: var(--success-bg);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .badge.warn {
+      color: #7b4a00;
+      background: var(--warn-bg);
+    }
+
+    .countdown-panel {
+      padding: 16px;
+      color: #fff;
+      border-radius: var(--radius);
+      background:
+        linear-gradient(135deg, rgba(16,52,82,.98), rgba(30,110,234,.92) 54%, rgba(12,165,143,.96));
+      box-shadow: 0 14px 30px rgba(30, 110, 234, .18);
+    }
+
+    .countdown-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 900;
+      opacity: .88;
+    }
+
+    .countdown {
+      margin: 0;
+      font-size: 40px;
+      font-weight: 950;
+      letter-spacing: 0;
+    }
+
+    .meter {
+      height: 8px;
+      margin: 14px 0 0;
+      border-radius: 99px;
+      background: rgba(255,255,255,.24);
+      overflow: hidden;
+    }
+
+    .meter i {
+      display: block;
+      width: 74%;
+      height: 100%;
+      border-radius: inherit;
+      background: #f4d35e;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 15px;
+    }
+
+    .queue-box {
+      margin-top: 13px;
+      padding: 13px;
+      border: 1px solid #b6dfeb;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #e8f8ff, #e8fff7);
+    }
+
+    .queue-box strong {
+      display: block;
+      margin-bottom: 7px;
+      color: #075677;
+      font-size: 15px;
+    }
+
+    .queue-box .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 5px;
+      color: #456579;
+      font-size: 13px;
+    }
+
+    .result-visual {
+      display: grid;
+      gap: 10px;
+    }
+
+    .result-state {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      align-items: center;
+      gap: 12px;
+      padding: 13px;
+      border-radius: var(--radius);
+      color: #064f3f;
+      background: linear-gradient(135deg, #ddfff1, #ecf9ff);
+      border: 1px solid #bce9da;
+    }
+
+    .result-state .pulse {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--teal);
+      box-shadow: 0 0 0 8px rgba(12, 165, 143, .12);
+    }
+
+    .result-state strong {
+      display: block;
+      font-size: 16px;
+    }
+
+    .result-state small {
+      color: #4e756d;
+      font-weight: 750;
+    }
+
+    .step-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+      font-size: 12px;
+    }
+
+    .step b {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--teal);
+      font-size: 12px;
+    }
+
+    .step.pending b { background: #8aa1b1; }
+    .step em {
+      color: var(--muted);
+      font-style: normal;
+      font-weight: 800;
+    }
+
+    .scenario-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .scenario-card {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .scenario-card.featured {
+      border-color: #9fe2d1;
+      background: linear-gradient(135deg, #dcfff1, #e9f7ff);
+    }
+
+    .scenario-card.warn {
+      border-color: #ffd18a;
+      background: linear-gradient(135deg, #fff1cf, #fff9ea);
+    }
+
+    .scenario-card.danger {
+      border-color: #ffc2ba;
+      background: linear-gradient(135deg, #ffe4e0, #fff4f2);
+    }
+
+    .scenario-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--teal);
+      box-shadow: 0 0 0 7px rgba(12, 165, 143, .12);
+    }
+
+    .scenario-card.warn .scenario-icon { background: var(--amber); box-shadow: 0 0 0 7px rgba(216, 137, 24, .13); }
+    .scenario-card.danger .scenario-icon { background: var(--red); box-shadow: 0 0 0 7px rgba(201, 54, 43, .12); }
+
+    .scenario-card strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 14px;
+    }
+
+    .scenario-card small {
+      display: block;
+      color: var(--muted);
+      line-height: 1.35;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .request-credit {
+      min-height: 34px;
+      margin-top: 8px;
+      padding: 0 10px;
+      border-radius: var(--radius);
+      color: #fff;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .admin-hero {
+      padding: 16px;
+      margin-bottom: 13px;
+      color: #fff;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #102333, #165aa7 55%, #0ca58f);
+      box-shadow: 0 14px 30px rgba(16, 52, 82, .18);
+    }
+
+    .admin-hero .admin-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .admin-hero strong {
+      display: block;
+      font-size: 22px;
+    }
+
+    .admin-hero span {
+      opacity: .82;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .admin-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 13px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .tab {
+      min-height: 43px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      color: var(--navy);
+      background: #dfe9f2;
+      font-weight: 900;
+    }
+
+    .tab.active {
+      color: #fff;
+      background: var(--navy);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-bottom: 13px;
+    }
+
+    .stat {
+      min-height: 94px;
+      padding: 12px;
+      border-radius: var(--radius);
+      color: #fff;
+      background: linear-gradient(135deg, var(--blue), var(--sky));
+      box-shadow: 0 10px 22px rgba(30, 110, 234, .16);
+    }
+
+    .stat:nth-child(2) { background: linear-gradient(135deg, var(--teal), #12bf7c); }
+    .stat:nth-child(3) { background: linear-gradient(135deg, #d97706, #f0b33c); }
+    .stat:nth-child(4) { background: linear-gradient(135deg, var(--navy), #3f6fa6); }
+
+    .stat strong {
+      display: block;
+      margin-top: 7px;
+      font-size: 27px;
+      letter-spacing: 0;
+    }
+
+    .stat span {
+      display: block;
+      opacity: .84;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .table {
+      display: grid;
+      gap: 8px;
+    }
+
+    .table-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+      font-size: 13px;
+    }
+
+    .table-row strong { font-size: 14px; }
+    .table-row small { color: var(--muted); }
+
+    .status-pill {
+      align-self: start;
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: #075f47;
+      background: var(--success-bg);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .status-pill.warn {
+      color: #7b4a00;
+      background: var(--warn-bg);
+    }
+
+    .status-pill.danger {
+      color: var(--red);
+      background: var(--danger-bg);
+    }
+
+    .mini-chart {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .bar {
+      display: grid;
+      grid-template-columns: 88px 1fr 42px;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .bar-track {
+      height: 9px;
+      border-radius: 99px;
+      background: #dbe7ef;
+      overflow: hidden;
+    }
+
+    .bar-track i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--teal), var(--blue));
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+    }
+
+    .config-cell {
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .config-cell span {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .config-cell strong {
+      font-size: 15px;
+    }
+
+    .notes {
+      display: grid;
+      gap: 14px;
+    }
+
+    .note-card {
+      padding: 18px;
+      border: 1px solid rgba(255, 255, 255, .78);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .82);
+      box-shadow: 0 10px 26px rgba(16, 52, 82, .08);
+      backdrop-filter: blur(10px);
+    }
+
+    .note-card h3 {
+      margin: 0 0 10px;
+    }
+
+    .note-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .note-list {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .note-list li {
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: #eaf4f8;
+      color: #405363;
+      font-size: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .prototype-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .canvas {
+        grid-template-columns: 1fr;
+      }
+
+      .phone {
+        margin: 0 auto;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .prototype-shell {
+        padding: 12px 8px 28px;
+      }
+
+      .phone {
+        width: 100%;
+        min-height: 760px;
+        border-width: 6px;
+        border-radius: 18px;
+      }
+
+      .screen {
+        height: 733px;
+        min-height: 733px;
+      }
+
+      .countdown {
+        font-size: 34px;
+      }
+
+      .button-row, .stats, .config-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute">
+    <symbol id="icon-school" viewBox="0 0 24 24"><path d="m22 10-10-5-10 5 10 5 10-5Z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/><path d="M22 10v6"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+    <symbol id="icon-ticket" viewBox="0 0 24 24"><path d="M2 9a3 3 0 0 0 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 0 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="icon-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="icon-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.38 1.05V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.05-.38H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.9l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .38-1.05V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.13.37.34.7.6 1 .3.28.67.43 1.05.43H21a2 2 0 1 1 0 4h-.09c-.38 0-.75.15-1.05.43-.26.3-.47.63-.6 1Z"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  </svg>
+
+  <div class="prototype-shell">
+    <header class="prototype-header">
+      <h1>Prototipo APK v2</h1>
+      <nav class="mode-switch" aria-label="Cambiar vista">
+        <button class="active" data-view="home">Inicio</button>
+        <button data-view="student">Estudiante</button>
+        <button data-view="admin">Admin</button>
+      </nav>
+    </header>
+
+    <div class="canvas">
+      <section class="phone" aria-label="Vista movil">
+        <div class="phone-status"><span>7:00</span><span>LTE 96%</span></div>
+
+        <main class="screen active" data-screen="home">
+          <section class="app-hero">
+            <div class="brand-row">
+              <div class="brand-mark"><svg class="icon"><use href="#icon-school"/></svg></div>
+            </div>
+            <div class="brand-title">
+              <p class="eyebrow" style="color: rgba(255,255,255,.78)">Registro automatico</p>
+              <h2>Asistente de estudiantes</h2>
+            </div>
+          </section>
+
+          <div class="role-grid">
+            <button class="role-card" data-go="student">
+              <span class="icon-tile"><svg class="icon"><use href="#icon-school"/></svg></span>
+              <span><strong>Estudiante</strong><small>Generar y verificar ticket</small></span>
+              <svg class="icon"><use href="#icon-ticket"/></svg>
+            </button>
+            <button class="role-card" data-go="admin">
+              <span class="icon-tile"><svg class="icon"><use href="#icon-shield"/></svg></span>
+              <span><strong>Administrador</strong><small>Control, cupos y diagnostico</small></span>
+              <svg class="icon"><use href="#icon-settings"/></svg>
+            </button>
+          </div>
+        </main>
+
+        <main class="screen" data-screen="student">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Acceso autorizado</p>
+              <h2>Estudiante</h2>
+            </div>
+            <div class="top-actions">
+              <button class="icon-button" data-go="home"><svg class="icon"><use href="#icon-arrow"/></svg></button>
+              <button class="icon-button"><svg class="icon"><use href="#icon-ticket"/></svg></button>
+            </div>
+          </div>
+
+          <div class="student-summary">
+            <div>
+              <strong>Listo para generar</strong>
+              <span>Cupo activo y hora sincronizada</span>
+            </div>
+            <div class="summary-badge">5 cupos</div>
+          </div>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-shield"/></svg></span><h3>Datos</h3></div>
+              <span class="badge">Autorizado</span>
+            </div>
+            <label class="field"><span>DNI</span><div class="input">72769843</div></label>
+            <label class="field"><span>Codigo estudiante</span><div class="input">2021200783B</div></label>
+            <small class="field-hint">La letra del codigo funciona igual en mayuscula o minuscula.</small>
+            <div class="button-row">
+              <button class="btn"><svg class="icon"><use href="#icon-check"/></svg>Ver cupo</button>
+              <button class="btn"><svg class="icon"><use href="#icon-ticket"/></svg>Verificar</button>
+            </div>
+          </section>
+
+          <section class="countdown-panel">
+            <div class="countdown-label"><span>Hora objetivo</span><span>07:00:00</span></div>
+            <div class="countdown">00:01:42.318</div>
+            <div class="meter"><i></i></div>
+          </section>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-activity"/></svg></span><h3>Cola Railway</h3></div>
+              <span class="badge warn">Preparado</span>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span>Inicio</span><strong>06:58</strong></div>
+              <div class="metric"><span>Fin</span><strong>07:01</strong></div>
+              <div class="metric"><span>Intentos</span><strong>840</strong></div>
+              <div class="metric"><span>Paralelos</span><strong>4</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="btn primary"><svg class="icon"><use href="#icon-activity"/></svg>Generar con disparos</button>
+              <button class="btn"><svg class="icon"><use href="#icon-ticket"/></svg>Verificar ticket</button>
+            </div>
+          </section>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-check"/></svg></span><h3>Resultado</h3></div>
+            </div>
+            <div class="result-visual">
+              <div class="scenario-grid">
+                <div class="scenario-card featured">
+                  <span class="scenario-icon"><svg class="icon"><use href="#icon-check"/></svg></span>
+                  <span><strong>Felicidades, obtuviste cupo para hoy</strong><small>Ticket confirmado. Guarda tu comprobante y presentalo en el comedor.</small></span>
+                </div>
+                <div class="scenario-card warn">
+                  <span class="scenario-icon"><svg class="icon"><use href="#icon-clock"/></svg></span>
+                  <span><strong>Preparado para las 7:00</strong><small>La cola ya quedo armada. No necesitas volver a presionar.</small></span>
+                </div>
+                <div class="scenario-card danger">
+                  <span class="scenario-icon"><svg class="icon"><use href="#icon-ticket"/></svg></span>
+                  <span><strong>Upps, cupos agotados</strong><small>La API oficial respondio que ya no quedan cupos disponibles.</small></span>
+                </div>
+                <div class="scenario-card">
+                  <span class="scenario-icon"><svg class="icon"><use href="#icon-users"/></svg></span>
+                  <span><strong>Sin cupos asignados</strong><small>Solo aqui aparece el boton para solicitar cupos al administrador.</small><button class="request-credit">Solicitar cupos</button></span>
+                </div>
+                <div class="scenario-card danger">
+                  <span class="scenario-icon"><svg class="icon"><use href="#icon-clock"/></svg></span>
+                  <span><strong>Registro cerrado</strong><small>La pagina oficial ya cerro el horario. Intenta el siguiente dia habil.</small></span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <main class="screen" data-screen="admin">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Administracion</p>
+              <h2>Panel</h2>
+            </div>
+            <div class="top-actions">
+              <button class="icon-button" data-go="home"><svg class="icon"><use href="#icon-arrow"/></svg></button>
+              <button class="icon-button"><svg class="icon"><use href="#icon-shield"/></svg></button>
+            </div>
+          </div>
+
+          <section class="admin-hero">
+            <div class="admin-line">
+              <div>
+                <span>Estado actual</span>
+                <strong>Operacion lista</strong>
+              </div>
+              <svg class="icon" style="width:38px;height:38px"><use href="#icon-chart"/></svg>
+            </div>
+          </section>
+
+          <nav class="admin-tabs">
+            <button class="tab active"><svg class="icon"><use href="#icon-chart"/></svg>Dashboard</button>
+            <button class="tab"><svg class="icon"><use href="#icon-users"/></svg>Alumnos</button>
+            <button class="tab"><svg class="icon"><use href="#icon-activity"/></svg>Cola</button>
+            <button class="tab"><svg class="icon"><use href="#icon-settings"/></svg>Config</button>
+          </nav>
+
+          <section class="stats">
+            <div class="stat"><span>Alumnos activos</span><strong>4</strong></div>
+            <div class="stat"><span>Tickets hoy</span><strong>3</strong></div>
+            <div class="stat"><span>Timeouts</span><strong>21</strong></div>
+            <div class="stat"><span>Global vivos</span><strong>24</strong></div>
+          </section>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-activity"/></svg></span><h3>Cola Railway</h3></div>
+              <span class="badge">API</span>
+            </div>
+            <div class="table">
+              <div class="table-row">
+                <strong>72772295</strong><span class="status-pill">Ticket</span>
+                <small>Intentos usados: 15 de 840</small><small>07:00:05</small>
+              </div>
+              <div class="table-row">
+                <strong>72769843</strong><span class="status-pill danger">Agotado</span>
+                <small>Intentos usados: 240 de 840</small><small>07:00:18</small>
+              </div>
+              <div class="table-row">
+                <strong>70115144</strong><span class="status-pill">Ticket</span>
+                <small>Intentos usados: 213 de 840</small><small>07:00:07</small>
+              </div>
+            </div>
+          </section>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-chart"/></svg></span><h3>Diagnostico</h3></div>
+            </div>
+            <div class="mini-chart">
+              <div class="bar"><span>Exitos</span><div class="bar-track"><i style="width:75%"></i></div><b>75%</b></div>
+              <div class="bar"><span>Timeout</span><div class="bar-track"><i style="width:28%"></i></div><b>28%</b></div>
+              <div class="bar"><span>Agotado</span><div class="bar-track"><i style="width:25%"></i></div><b>25%</b></div>
+            </div>
+          </section>
+
+          <section class="card section">
+            <div class="section-title">
+              <div class="title-left"><span class="glyph"><svg class="icon"><use href="#icon-settings"/></svg></span><h3>Configuracion critica</h3></div>
+            </div>
+            <div class="config-grid">
+              <div class="config-cell"><span>Modo</span><strong>API</strong></div>
+              <div class="config-cell"><span>Cola</span><strong>Activa</strong></div>
+              <div class="config-cell"><span>Pre</span><strong>120000 ms</strong></div>
+              <div class="config-cell"><span>Post</span><strong>90000 ms</strong></div>
+              <div class="config-cell"><span>Paralelos</span><strong>4</strong></div>
+              <div class="config-cell"><span>Global</span><strong>24</strong></div>
+            </div>
+          </section>
+        </main>
+      </section>
+
+      <aside class="notes">
+        <section class="note-card">
+          <h3>Cambios de esta maqueta</h3>
+          <p>Inicio mas academico y visual, menos texto, mejor jerarquia para estudiante y dashboard admin con metricas claras.</p>
+        </section>
+
+        <section class="note-card">
+          <h3>Para estudiante</h3>
+          <ul class="note-list">
+            <li>Solo datos, estado, hora objetivo, cola y resultado.</li>
+            <li>Botones principales visibles y separados.</li>
+            <li>Solicitar cupos solo aparece cuando el alumno tiene 0 cupos.</li>
+            <li>Resultado con escenarios visuales: exito, preparado, agotado, sin cupos y cerrado.</li>
+            <li>El codigo acepta la letra en mayuscula o minuscula sin diferencia.</li>
+          </ul>
+        </section>
+
+        <section class="note-card">
+          <h3>Para administrador</h3>
+          <ul class="note-list">
+            <li>Dashboard con alumnos, tickets, timeouts y limite global.</li>
+            <li>Cola con texto claro: intentos usados, no cupos reales.</li>
+            <li>Diagnostico visual para decidir ajustes futuros.</li>
+          </ul>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const buttons = document.querySelectorAll('[data-view]');
+    const screens = document.querySelectorAll('[data-screen]');
+
+    function show(view) {
+      buttons.forEach((button) => button.classList.toggle('active', button.dataset.view === view));
+      screens.forEach((screen) => screen.classList.toggle('active', screen.dataset.screen === view));
+    }
+
+    buttons.forEach((button) => button.addEventListener('click', () => show(button.dataset.view)));
+    document.querySelectorAll('[data-go]').forEach((button) => {
+      button.addEventListener('click', () => show(button.dataset.go));
+    });
+  </script>
+</body>
+</html>
