@@ -112,19 +112,35 @@ function queueMessage(job) {
 }
 
 function studentQueueMessage(job) {
-  if (job?.status === 'queued') return 'Tu registro automatico quedo programado. No vuelvas a presionar el boton.';
-  if (job?.status === 'running') return 'Estamos intentando generar tu ticket automaticamente.';
+  if (job?.status === 'queued') return 'Tu registro automatico quedo programado.';
+  if (job?.status === 'running') return 'Estamos generando tu ticket automaticamente.';
   return queueMessage(job);
 }
 
 function buildStudentOutcome({ result, queueJob, status, id }) {
   const sameStudent = status?.id === id;
   const credits = Number(status?.student?.credits ?? 0);
+  if (queueJob?.status === 'queued') {
+    return {
+      tone: 'wait',
+      icon: Clock3,
+      title: 'Preparado',
+      message: 'Tu registro automatico ya esta en cola activa.'
+    };
+  }
+  if (queueJob?.status === 'running') {
+    return {
+      tone: 'info',
+      icon: Activity,
+      title: 'Generando ticket',
+      message: 'Railway esta intentando obtener tu ticket.'
+    };
+  }
   if (queueJob?.status === 'success' || result?.status === 'success' || result?.job?.status === 'success') {
     return {
       tone: 'success',
       icon: CheckCircle2,
-      title: 'Felicidades, obtuviste cupo para hoy',
+      title: 'Exito',
       message: 'Ticket confirmado. Guarda tu comprobante y presentalo en el comedor.'
     };
   }
@@ -132,8 +148,24 @@ function buildStudentOutcome({ result, queueJob, status, id }) {
     return {
       tone: 'danger',
       icon: Ticket,
-      title: 'Upps, cupos agotados',
-      message: 'La API oficial respondio que ya no quedan cupos disponibles.'
+      title: 'Agotado',
+      message: 'Ya no quedan cupos disponibles para hoy.'
+    };
+  }
+  if (queueJob?.status === 'not_open_yet' || result?.status === 'not_open_yet' || result?.job?.status === 'not_open_yet') {
+    return {
+      tone: 'danger',
+      icon: XCircle,
+      title: 'Cerrado',
+      message: 'El registro oficial todavia no esta abierto o ya cerro.'
+    };
+  }
+  if (queueJob?.status === 'not_authorized' || result?.status === 'not_authorized' || result?.job?.status === 'not_authorized') {
+    return {
+      tone: 'empty',
+      icon: Users,
+      title: 'Sin cupos',
+      message: 'No tienes cupos activos para generar ticket.'
     };
   }
   if (queueJob?.status === 'restricted' || result?.status === 'restricted') {
@@ -156,24 +188,16 @@ function buildStudentOutcome({ result, queueJob, status, id }) {
     return {
       tone: 'empty',
       icon: Users,
-      title: 'Sin cupos asignados',
+      title: 'Sin cupos',
       message: 'Solicita cupos al administrador para activar el registro automatico.'
     };
   }
-  if (queueJob?.status === 'queued') {
+  if (result?.status === 'scheduled' || result?.status === 'armed') {
     return {
       tone: 'wait',
       icon: Clock3,
-      title: 'Preparado para las 7:00',
-      message: 'La cola quedo armada. No necesitas volver a presionar.'
-    };
-  }
-  if (queueJob?.status === 'running') {
-    return {
-      tone: 'info',
-      icon: Activity,
-      title: 'Generando ticket',
-      message: 'Railway esta disparando intentos controlados contra la API oficial.'
+      title: 'Preparado',
+      message: 'Tu registro automatico quedo programado.'
     };
   }
   if (result?.message) {
@@ -187,13 +211,14 @@ function buildStudentOutcome({ result, queueJob, status, id }) {
   return {
     tone: 'idle',
     icon: Clock3,
-    title: 'Sin ejecuciones todavia',
-    message: 'Verifica tu cupo o arma la cola cuando corresponda.'
+    title: sameStudent && status?.authorized ? 'Listo' : 'Sin ejecutar',
+    message: sameStudent && status?.authorized ? 'Puedes armar la cola cuando corresponda.' : 'Verifica tu cupo para continuar.'
   };
 }
 
 function StudentResultVisual({ outcome, showRequestAccess, busy, onRequestAccess, onSaveReceipt, hasResult }) {
   const Icon = outcome.icon;
+  const canSaveReceipt = outcome.tone === 'success' && hasResult;
   return (
     <div className={`studentOutcome ${outcome.tone}`}>
       <div className="outcomeIcon"><Icon size={24} /></div>
@@ -202,7 +227,7 @@ function StudentResultVisual({ outcome, showRequestAccess, busy, onRequestAccess
         <span>{outcome.message}</span>
         <div className="outcomeActions">
           {showRequestAccess && <button disabled={busy} onClick={onRequestAccess}><Send size={17} /> Solicitar cupos</button>}
-          <button disabled={!hasResult} onClick={onSaveReceipt}><Save size={17} /> Guardar comprobante</button>
+          {canSaveReceipt && <button onClick={onSaveReceipt}><Save size={17} /> Guardar comprobante</button>}
         </div>
       </div>
     </div>
@@ -293,6 +318,16 @@ function StudentApp({ onSwitchRole }) {
     };
   }, [queueJob?.id, queueJob?.status, id]);
 
+  useEffect(() => {
+    if (!queueJob?.id || !config?.targetTime || queueJob.studentId !== id || ACTIVE_QUEUE_STATUSES.has(queueJob.status)) return;
+    const currentTarget = new Date(config.targetTime).getTime();
+    const queueTarget = new Date(queueJob.targetAt || queueJob.targetTime || 0).getTime();
+    if (Number.isFinite(currentTarget) && Number.isFinite(queueTarget) && Math.abs(currentTarget - queueTarget) > 60_000) {
+      updateQueueJob(null);
+      setResult(null);
+    }
+  }, [queueJob?.id, queueJob?.status, queueJob?.targetAt, config?.targetTime, id]);
+
   function updateQueueJob(job) {
     setQueueJobState(job);
     if (job) localStorage.setItem('student:queueJob', JSON.stringify(job));
@@ -379,6 +414,7 @@ function StudentApp({ onSwitchRole }) {
   async function generateWithPrefire() {
     setResult(null);
     setAttemptLogs([]);
+    updateQueueJob(null);
     setBusy(true);
     try {
       const freshConfig = await refreshConfig();
@@ -389,19 +425,16 @@ function StudentApp({ onSwitchRole }) {
       const cfg = freshConfig?.config;
       const firePlan = resolveGenerateFireAt(freshConfig);
       const fireAt = firePlan.fireAt;
-      if (cfg?.useServerQueue && !firePlan.immediate) {
-        addAttemptLog('Armando cola Railway: el backend disparara aunque el telefono sea lento.');
-        addAttemptLog(`Ventana controlada: ${Number(cfg?.preFireMs || 3000)} ms antes, intervalo ${Number(cfg?.intervalMs || 400)} ms.`);
+      if (cfg?.useServerQueue) {
         const queued = await api('/api/queue/arm', {
           method: 'POST',
           body: JSON.stringify({ dni, codigo, clientId: 'student-app' })
         });
         updateQueueJob(queued.job);
-        addAttemptLog(`Cola lista. Inicio: ${new Date(queued.startAt).toLocaleTimeString()}, objetivo: ${new Date(queued.targetTime).toLocaleTimeString()}.`);
         setResult({
           ok: true,
           status: queued.status,
-          message: 'Registro automatico preparado. Mantenga la app abierta para ver el estado.',
+          message: queued.status === 'running' ? 'Cola activa: generando ticket.' : 'Cola activa: registro automatico preparado.',
           job: queued.job
         });
         return;
@@ -521,7 +554,7 @@ function StudentApp({ onSwitchRole }) {
           <strong>{isAuthorized ? 'Listo para generar' : 'Verifica tu cupo'}</strong>
           <span>{isAuthorized ? 'Cupo activo y hora sincronizada' : 'Consulta tu estado antes de armar la cola'}</span>
         </div>
-        <div className="heroBadge">{sameStudentStatus ? `${studentCredits ?? 0} cupos` : 'Sin verificar'}</div>
+        <div className="heroBadge">{sameStudentStatus ? (isAuthorized ? 'Acceso activo' : 'Sin cupo') : 'Sin verificar'}</div>
       </section>
 
       <main className="studentGrid">
@@ -534,18 +567,10 @@ function StudentApp({ onSwitchRole }) {
             <Field label="DNI" value={dni} onChange={setDni} placeholder="Ej. 70123456" />
             <Field label="Codigo estudiante" value={codigo} onChange={setCodigo} placeholder="Ej. 2020123456" />
           </div>
-          <p className="fieldHint">La letra del codigo funciona igual en mayuscula o minuscula.</p>
           <div className="actions">
             {showCheckStatus && <button disabled={busy || !dni || !codigo} onClick={checkStatus}><ListChecks size={18} /> Ver cupo</button>}
             {showRequestAccess && <button disabled={busy || !dni || !codigo} onClick={requestAccess}><Send size={18} /> Solicitar cupos</button>}
           </div>
-          {status?.id === id && (
-            <div className="statusLine">
-              <StatusBadge ok={status.authorized}>{status.authorized ? 'Autorizado' : 'Sin cupo activo'}</StatusBadge>
-              <span>Cupos: {status.student?.credits ?? 0}</span>
-              <span>Estado: {status.student?.status || 'no registrado'}</span>
-            </div>
-          )}
         </section>
 
         <section className="panel timerPanel">
@@ -558,35 +583,18 @@ function StudentApp({ onSwitchRole }) {
             <div className="countdown">{config ? formatCountdown(countdownMs) : '--:--:--.---'}</div>
             <i />
           </div>
-          <div className="metaGrid">
-            <span>Servidor</span><strong>{serverOffset >= 0 ? '+' : ''}{serverOffset} ms</strong>
-            <span>Pre-disparo</span><strong>{config?.config?.preFireMs ?? '-'} ms</strong>
-            <span>Post-disparo</span><strong>{config?.config?.postFireMs ?? '-'} ms</strong>
-            <span>Intentos</span><strong>{config?.config?.maxAttempts ?? '-'}</strong>
-            <span>Intervalo</span><strong>{config?.config?.intervalMs ?? '-'} ms</strong>
-            <span>Paralelos</span><strong>{config?.config?.parallelAttemptsPerUser ?? '-'}</strong>
-          </div>
           <button className="primary" disabled={busy || !isAuthorized} onClick={generateWithPrefire}>
             <Activity size={18} /> Generar con disparos
           </button>
           <button disabled={busy || !isAuthorized} onClick={() => runAttempts({ scheduled: false })}>
             <Ticket size={18} /> Verificar ticket
           </button>
-          {queueJob && queueJob.studentId === id && (
-            <div className={`queueBox ${queueJob.status === 'success' ? 'ok' : ''}`}>
-              <strong>{queueStatusLabel(queueJob.status)}</strong>
+          {queueJob && queueJob.studentId === id && ACTIVE_QUEUE_STATUSES.has(queueJob.status) && (
+            <div className={`queueBox ${queueJob.status === 'running' ? 'running' : 'active'}`}>
+              <strong>Cola activa</strong>
               <span>{studentQueueMessage(queueJob)}</span>
-              <small>Inicio automatico: {queueJob.startAt ? new Date(queueJob.startAt).toLocaleTimeString() : '-'}</small>
-              <small>Hora objetivo: {queueJob.targetAt ? new Date(queueJob.targetAt).toLocaleTimeString() : '-'}</small>
+              <small>{queueJob.status === 'running' ? 'Estado: generando ahora' : 'Estado: preparado'}</small>
             </div>
-          )}
-          {attemptLogs.length > 0 && (
-            <details className="debugDetails">
-              <summary>Detalles tecnicos</summary>
-              <div className="attemptLog">
-                {attemptLogs.map((item) => <span key={`${item.at}-${item.message}`}>{item.at} - {item.message}</span>)}
-              </div>
-            </details>
           )}
         </section>
 
@@ -603,12 +611,6 @@ function StudentApp({ onSwitchRole }) {
             onSaveReceipt={saveReceipt}
             hasResult={Boolean(result)}
           />
-          {result && (
-            <details className="debugDetails resultDetails">
-              <summary>Detalle tecnico</summary>
-              <pre className="resultBox">{JSON.stringify(result, null, 2)}</pre>
-            </details>
-          )}
         </section>
 
         <section className="panel">
