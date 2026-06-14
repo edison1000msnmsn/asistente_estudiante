@@ -396,9 +396,11 @@ function StudentApp({ onSwitchRole }) {
         message: data.message,
         attempts: data.attempts || []
       };
-      const next = [entry, ...history].slice(0, 30);
-      setHistory(next);
-      localStorage.setItem('student:history', JSON.stringify(next));
+      if (scheduled) {
+        const next = [entry, ...history].slice(0, 30);
+        setHistory(next);
+        localStorage.setItem('student:history', JSON.stringify(next));
+      }
       setResult(data);
       if (isWebViewMode) {
         openOfficialWebView(scheduled ? fireAtMs : Date.now(), undefined, { mode: scheduled ? 'prefire' : 'immediate' });
@@ -607,20 +609,25 @@ function StudentApp({ onSwitchRole }) {
         </section>
 
         <section className="panel">
-          <div className="sectionTitle">
-            <History />
-            <h2>Historial local</h2>
-          </div>
-          <div className="list">
-            {history.length === 0 && <p className="hint">Los intentos quedaran guardados en este dispositivo.</p>}
-            {history.map((item) => (
-              <div className="row" key={item.at}>
-                <span>{new Date(item.at).toLocaleString()}</span>
-                <StatusBadge ok={item.ok}>{item.ok ? 'exito' : 'fallo'}</StatusBadge>
-                <small>{item.message}</small>
-              </div>
-            ))}
-          </div>
+          <details className="historyDetails">
+            <summary>
+              <span className="sectionTitle">
+                <History />
+                <h2>Historial local</h2>
+              </span>
+              <small>{history.length} registros</small>
+            </summary>
+            <div className="list">
+              {history.length === 0 && <p className="hint">Aqui solo apareceran registros hechos con Generar con disparos.</p>}
+              {history.map((item) => (
+                <div className="row" key={item.at}>
+                  <span>{new Date(item.at).toLocaleString()}</span>
+                  <StatusBadge ok={item.ok}>{item.ok ? 'exito' : 'fallo'}</StatusBadge>
+                  <small>{item.message}</small>
+                </div>
+              ))}
+            </div>
+          </details>
         </section>
       </main>
     </div>
@@ -742,7 +749,7 @@ function AdminApp({ onSwitchRole }) {
       </nav>
       {message && <p className="notice">{message}</p>}
 
-      {tab === 'dashboard' && <Dashboard stats={data.stats} config={data.config} />}
+      {tab === 'dashboard' && <Dashboard stats={data.stats} config={data.config} queue={data.queue} />}
       {tab === 'students' && <Students students={data.students} setCredits={setCredits} />}
       {tab === 'requests' && <Requests requests={data.requests} approve={approve} />}
       {tab === 'queue' && <QueueJobs jobs={data.queue} />}
@@ -752,19 +759,21 @@ function AdminApp({ onSwitchRole }) {
   );
 }
 
-function Dashboard({ stats, config }) {
+function Dashboard({ stats, config, queue = [] }) {
   const items = [
     ['Alumnos', stats?.students ?? 0],
     ['Solicitudes pendientes', stats?.pendingRequests ?? 0],
     ['Intentos', stats?.attempts ?? 0],
-    ['Exitos', stats?.success ?? 0],
-    ['Fallos', stats?.failed ?? 0],
+    ['Intentos exito', stats?.success ?? 0],
+    ['Intentos fallo', stats?.failed ?? 0],
     ['Cola activa', stats?.queueActive ?? 0],
     ['Cola exitosa', stats?.queueSuccess ?? 0],
     ['Cupos disponibles', stats?.creditsAvailable ?? 0]
   ];
-  const success = Number(stats?.success ?? 0);
-  const failed = Number(stats?.failed ?? 0);
+  const finishedQueue = queue.filter((job) => job && !ACTIVE_QUEUE_STATUSES.has(job.status));
+  const useQueueDiagnosis = finishedQueue.length > 0;
+  const success = useQueueDiagnosis ? finishedQueue.filter((job) => job.status === 'success').length : Number(stats?.success ?? 0);
+  const failed = useQueueDiagnosis ? finishedQueue.filter((job) => job.status !== 'success').length : Number(stats?.failed ?? 0);
   const total = Math.max(1, success + failed);
   const successRate = Math.round((success / total) * 100);
   const failRate = Math.round((failed / total) * 100);
@@ -788,8 +797,8 @@ function Dashboard({ stats, config }) {
       <section className="panel diagnosticPanel">
         <div className="sectionTitle"><Activity /><h2>Diagnostico rapido</h2></div>
         <div className="barList">
-          <div className="barRow"><span>Exitos</span><i><b style={{ width: `${successRate}%` }} /></i><strong>{successRate}%</strong></div>
-          <div className="barRow"><span>Fallos</span><i><b style={{ width: `${failRate}%` }} /></i><strong>{failRate}%</strong></div>
+          <div className="barRow"><span>{useQueueDiagnosis ? 'Tickets' : 'Exitos'}</span><i><b style={{ width: `${successRate}%` }} /></i><strong>{successRate}%</strong></div>
+          <div className="barRow"><span>{useQueueDiagnosis ? 'Sin ticket' : 'Fallos'}</span><i><b style={{ width: `${failRate}%` }} /></i><strong>{failRate}%</strong></div>
           <div className="barRow"><span>Cola activa</span><i><b style={{ width: `${Math.min(100, Number(stats?.queueActive ?? 0) * 25)}%` }} /></i><strong>{stats?.queueActive ?? 0}</strong></div>
         </div>
       </section>
