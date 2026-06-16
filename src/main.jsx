@@ -25,6 +25,7 @@ const DEFAULT_REMOTE_API = import.meta.env.VITE_DEFAULT_API_BASE || 'https://asi
 const isNativeApp = Boolean(window.Capacitor) || location.protocol === 'capacitor:' || (location.hostname === 'localhost' && location.protocol === 'https:');
 const API_BASE = import.meta.env.VITE_API_BASE || (isNativeApp ? DEFAULT_REMOTE_API : '');
 const TARGET_PAGE = import.meta.env.VITE_TARGET_PAGE || 'https://comedor.uncp.edu.pe/charola';
+const LIMA_TIME_ZONE = 'America/Lima';
 
 function studentId(dni, codigo) {
   return `${String(dni).trim()}:${String(codigo).trim()}`;
@@ -89,6 +90,40 @@ function readStoredQueueJob() {
   } catch {
     return null;
   }
+}
+
+function limaParts(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: LIMA_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(value));
+  const get = (type) => parts.find((part) => part.type === type)?.value || '';
+  return {
+    dayKey: `${get('year')}-${get('month')}-${get('day')}`,
+    hour: Number(get('hour') || 0) % 24
+  };
+}
+
+function formatLimaDateTime(value) {
+  if (!value) return 'Sin fecha';
+  return new Intl.DateTimeFormat('es-PE', {
+    timeZone: LIMA_TIME_ZONE,
+    dateStyle: 'short',
+    timeStyle: 'medium'
+  }).format(new Date(value));
+}
+
+function shouldKeepQueueResultUntilNoon(job) {
+  if (!job || ACTIVE_QUEUE_STATUSES.has(job.status)) return false;
+  const reference = job.targetAt || job.targetTime || job.finishedAt || job.lastAttemptAt || job.queuedAt;
+  if (!reference) return false;
+  const jobDay = limaParts(reference).dayKey;
+  const now = limaParts();
+  return jobDay === now.dayKey && now.hour < 12;
 }
 
 function queueStatusLabel(status) {
@@ -234,6 +269,96 @@ function StudentResultVisual({ outcome, showRequestAccess, busy, onRequestAccess
   );
 }
 
+function historyFallback(status, ok) {
+  if (status === 'success' || ok) {
+    return {
+      title: 'Exito',
+      message: 'Ticket confirmado. Guarda tu comprobante y presentalo en el comedor.'
+    };
+  }
+  if (status === 'sold_out') {
+    return { title: 'Agotado', message: 'Ya no quedan cupos disponibles para hoy.' };
+  }
+  if (status === 'not_open_yet') {
+    return { title: 'Cerrado', message: 'El registro oficial todavia no esta abierto o ya cerro.' };
+  }
+  if (status === 'not_authorized') {
+    return { title: 'Sin cupos', message: 'No tienes cupos activos para generar ticket.' };
+  }
+  if (status === 'queued' || status === 'running') {
+    return { title: queueStatusLabel(status), message: 'Tu registro automatico esta en proceso.' };
+  }
+  return { title: 'Sin confirmacion', message: 'No se pudo confirmar el ticket.' };
+}
+
+function historyEntryFromQueueJob(job) {
+  const outcome = buildStudentOutcome({
+    result: { status: job.status, job },
+    queueJob: job,
+    status: null,
+    id: job.studentId
+  });
+  return {
+    at: job.finishedAt || job.lastAttemptAt || new Date().toISOString(),
+    ok: job.status === 'success',
+    status: job.status,
+    title: outcome.title,
+    message: outcome.message,
+    rawMessage: queueMessage(job),
+    queueJobId: job.id,
+    attempts: job.attemptsRun || 0,
+    mode: 'queue'
+  };
+}
+
+function normalizeHistoryEntry(item) {
+  const status = item.status || (item.ok ? 'success' : 'failed');
+  const fallback = historyFallback(status, item.ok);
+  const message = item.ok && String(item.message || '').trim().toLowerCase() === 'timeout'
+    ? fallback.message
+    : item.message || fallback.message;
+  return {
+    ...item,
+    at: item.at || new Date().toISOString(),
+    status,
+    title: item.title || fallback.title,
+    message
+  };
+}
+
+function readStoredHistory() {
+  try {
+    return JSON.parse(localStorage.getItem('student:history') || '[]').map(normalizeHistoryEntry);
+  } catch {
+    return [];
+  }
+}
+
+function HistoryEntryCard({ item }) {
+  const entry = normalizeHistoryEntry(item);
+  const isWaiting = entry.status === 'queued' || entry.status === 'running';
+  const Icon = entry.ok ? CheckCircle2 : isWaiting ? Clock3 : XCircle;
+  const tone = entry.ok ? 'success' : isWaiting ? 'wait' : 'danger';
+  const attemptsCount = Array.isArray(entry.attempts) ? entry.attempts.length : Number(entry.attempts || 0);
+  return (
+    <article className={`historyCard ${tone}`}>
+      <div className="historyIcon"><Icon size={19} /></div>
+      <div className="historyBody">
+        <div className="historyHead">
+          <strong>{entry.title}</strong>
+          <span>{formatLimaDateTime(entry.at)}</span>
+        </div>
+        <p>{entry.message}</p>
+        <div className="historyMeta">
+          <small>{entry.mode === 'queue' ? 'Generar con disparos' : 'Verificacion'}</small>
+          {attemptsCount > 0 ? <small>{attemptsCount} intentos</small> : null}
+          <small>{queueStatusLabel(entry.status)}</small>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function StudentApp({ onSwitchRole }) {
   const [dni, setDni] = useState(localStorage.getItem('student:dni') || '');
   const [codigo, setCodigo] = useState(localStorage.getItem('student:codigo') || '');
@@ -249,7 +374,7 @@ function StudentApp({ onSwitchRole }) {
   const [nowTick, setNowTick] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-  const [history, setHistory] = useState(JSON.parse(localStorage.getItem('student:history') || '[]'));
+  const [history, setHistory] = useState(readStoredHistory);
   const [attemptLogs, setAttemptLogs] = useState([]);
   const [queueJob, setQueueJobState] = useState(readStoredQueueJob);
   const [autoCheckAllowed] = useState(() => Boolean(localStorage.getItem('student:dni') && localStorage.getItem('student:codigo')));
@@ -290,19 +415,13 @@ function StudentApp({ onSwitchRole }) {
         if (cancelled) return;
         updateQueueJob(data.job);
         if (!ACTIVE_QUEUE_STATUSES.has(data.job.status)) {
-          const entry = {
-            at: new Date().toISOString(),
-            ok: data.job.status === 'success',
-            message: queueMessage(data.job),
-            queueJobId: data.job.id,
-            attempts: data.job.attemptsRun || 0
-          };
+          const entry = historyEntryFromQueueJob(data.job);
           setHistory((items) => {
-            const next = [entry, ...items].slice(0, 30);
+            const next = [entry, ...items.filter((item) => item.queueJobId !== entry.queueJobId)].slice(0, 30).map(normalizeHistoryEntry);
             localStorage.setItem('student:history', JSON.stringify(next));
             return next;
           });
-          setResult({ ok: data.job.status === 'success', status: data.job.status, message: queueMessage(data.job), job: data.job });
+          setResult({ ok: data.job.status === 'success', status: data.job.status, message: entry.message, job: data.job });
           addAttemptLog(`Cola Railway finalizada: ${queueStatusLabel(data.job.status)}.`);
           await checkStatus({ keepResult: true });
         }
@@ -320,13 +439,20 @@ function StudentApp({ onSwitchRole }) {
 
   useEffect(() => {
     if (!queueJob?.id || !config?.targetTime || queueJob.studentId !== id || ACTIVE_QUEUE_STATUSES.has(queueJob.status)) return;
+    if (shouldKeepQueueResultUntilNoon(queueJob)) {
+      if (!result) {
+        const entry = historyEntryFromQueueJob(queueJob);
+        setResult({ ok: queueJob.status === 'success', status: queueJob.status, message: entry.message, job: queueJob });
+      }
+      return;
+    }
     const currentTarget = new Date(config.targetTime).getTime();
     const queueTarget = new Date(queueJob.targetAt || queueJob.targetTime || 0).getTime();
     if (Number.isFinite(currentTarget) && Number.isFinite(queueTarget) && Math.abs(currentTarget - queueTarget) > 60_000) {
       updateQueueJob(null);
       setResult(null);
     }
-  }, [queueJob?.id, queueJob?.status, queueJob?.targetAt, config?.targetTime, id]);
+  }, [queueJob?.id, queueJob?.status, queueJob?.targetAt, config?.targetTime, id, result]);
 
   function updateQueueJob(job) {
     setQueueJobState(job);
@@ -344,6 +470,21 @@ function StudentApp({ onSwitchRole }) {
     return target;
   }
 
+  async function refreshLatestQueueJob() {
+    if (!dni || !codigo || !id.includes(':')) return null;
+    const data = await api(`/api/student/${encodeURIComponent(id)}/queue`);
+    const latest = data.jobs?.[0];
+    if (!latest) return null;
+    if (ACTIVE_QUEUE_STATUSES.has(latest.status) || shouldKeepQueueResultUntilNoon(latest)) {
+      updateQueueJob(latest);
+      if (!ACTIVE_QUEUE_STATUSES.has(latest.status)) {
+        const entry = historyEntryFromQueueJob(latest);
+        setResult({ ok: latest.status === 'success', status: latest.status, message: entry.message, job: latest });
+      }
+    }
+    return latest;
+  }
+
   async function checkStatus({ keepResult = false } = {}) {
     setBusy(true);
     if (!keepResult) setResult(null);
@@ -353,6 +494,7 @@ function StudentApp({ onSwitchRole }) {
       setStatus(nextStatus);
       localStorage.setItem('student:status', JSON.stringify(nextStatus));
       await refreshConfig();
+      await refreshLatestQueueJob();
     } catch (error) {
       setResult({ ok: false, message: error.message });
     } finally {
@@ -393,6 +535,8 @@ function StudentApp({ onSwitchRole }) {
       const entry = {
         at: new Date().toISOString(),
         ok: data.ok,
+        status: data.status || (data.ok ? 'success' : 'failed'),
+        title: data.ok ? 'Operacion completada' : 'Sin confirmacion',
         message: data.message,
         attempts: data.attempts || []
       };
@@ -620,11 +764,7 @@ function StudentApp({ onSwitchRole }) {
             <div className="list">
               {history.length === 0 && <p className="hint">Aqui solo apareceran registros hechos con Generar con disparos.</p>}
               {history.map((item) => (
-                <div className="row" key={item.at}>
-                  <span>{new Date(item.at).toLocaleString()}</span>
-                  <StatusBadge ok={item.ok}>{item.ok ? 'exito' : 'fallo'}</StatusBadge>
-                  <small>{item.message}</small>
-                </div>
+                <HistoryEntryCard item={item} key={`${item.queueJobId || item.at}-${item.status || ''}`} />
               ))}
             </div>
           </details>

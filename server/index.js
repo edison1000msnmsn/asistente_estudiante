@@ -444,6 +444,10 @@ function scheduleQueueJob(job) {
 }
 
 async function finishQueueJob(job, status, result = null) {
+  if (job.status === 'success') {
+    await saveDb();
+    return;
+  }
   job.status = status;
   job.finishedAt = new Date().toISOString();
   if (result) {
@@ -521,10 +525,12 @@ async function runQueueJob(jobId) {
 
     job.attemptsRun = Math.max(Number(job.attemptsRun || 0), index + 1);
     job.lastAttemptAt = new Date().toISOString();
-    job.lastStatus = apiResult.status;
-    job.lastMessage = apiResult.payload?.message || apiResult.status;
-    job.result = apiResult;
-    lastResult = apiResult;
+    if (job.status !== 'success') {
+      job.lastStatus = apiResult.status;
+      job.lastMessage = apiResult.payload?.message || apiResult.status;
+      job.result = apiResult;
+      lastResult = apiResult;
+    }
     await saveDb();
   }
 
