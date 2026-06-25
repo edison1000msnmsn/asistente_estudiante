@@ -101,12 +101,6 @@ async function loadDb() {
     };
     if (Number(loaded.schemaVersion || 1) < 2) {
       migrated.schemaVersion = 2;
-      migrated.config.useServerQueue = false;
-      migrated.config.automationMode = 'secure_session';
-      migrated.config.targetMode = 'secure_webview';
-      migrated.config.maxAttempts = 1;
-      migrated.config.parallelAttemptsPerUser = 1;
-      migrated.config.globalConcurrentAttempts = 1;
       for (const job of Object.values(migrated.ticketQueue || {})) {
         if (job.status === 'queued' || job.status === 'running') {
           job.status = 'cancelled';
@@ -116,6 +110,12 @@ async function loadDb() {
         }
       }
     }
+    migrated.config.useServerQueue = false;
+    migrated.config.automationMode = 'secure_session';
+    migrated.config.targetMode = 'secure_webview';
+    migrated.config.maxAttempts = 1;
+    migrated.config.parallelAttemptsPerUser = 1;
+    migrated.config.globalConcurrentAttempts = 1;
     return migrated;
   } catch {
     await fs.mkdir(dataDir, { recursive: true });
