@@ -4,12 +4,20 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { nanoid } from 'nanoid';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ACTIVE_PREPARATION_STATUSES,
+  SUCCESS_PREPARATION_STATUSES,
+  TERMINAL_PREPARATION_STATUSES,
+  canTransitionPreparation,
+  preparationStatusMessage
+} from './preparation-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
 const dbPath = path.join(dataDir, 'db.json');
 
 const env = {
@@ -21,9 +29,10 @@ const env = {
   targetEndpoint: process.env.TARGET_ENDPOINT || 'https://comedor.uncp.edu.pe/charola',
   officialTicketEndpoint: process.env.OFFICIAL_TICKET_ENDPOINT || 'https://comensales.uncp.edu.pe/api/registros',
   targetPage: process.env.TARGET_PAGE || 'https://comedor.uncp.edu.pe/charola',
-  targetMode: process.env.TARGET_MODE || 'api',
+  targetMode: process.env.TARGET_MODE || 'secure_webview',
   targetApiToken: process.env.TARGET_API_TOKEN || '',
-  publicRateLimit: Number(process.env.PUBLIC_RATE_LIMIT || 5000)
+  publicRateLimit: Number(process.env.PUBLIC_RATE_LIMIT || 5000),
+  preparationTokenSecret: process.env.PREPARATION_TOKEN_SECRET || process.env.ADMIN_TOKEN || ''
 };
 
 const defaultConfig = {
@@ -31,17 +40,21 @@ const defaultConfig = {
   targetMinute: Number(process.env.TARGET_MINUTE || 0),
   targetSecond: Number(process.env.TARGET_SECOND || 0),
   targetMs: Number(process.env.TARGET_MS || 0),
-  preFireMs: Number(process.env.PRE_FIRE_MS || 120000),
-  postFireMs: Number(process.env.POST_FIRE_MS || 90000),
-  maxAttempts: Number(process.env.MAX_ATTEMPTS || 840),
-  intervalMs: Number(process.env.INTERVAL_MS || 250),
+  preFireMs: Number(process.env.PRE_FIRE_MS || 0),
+  postFireMs: Number(process.env.POST_FIRE_MS || 0),
+  maxAttempts: 1,
+  intervalMs: Number(process.env.INTERVAL_MS || 1000),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 2000),
-  parallelAttemptsPerUser: Number(process.env.PARALLEL_ATTEMPTS_PER_USER || 4),
-  globalConcurrentAttempts: Number(process.env.GLOBAL_CONCURRENT_ATTEMPTS || 24),
+  parallelAttemptsPerUser: 1,
+  globalConcurrentAttempts: 1,
   stopOnFirstSuccess: true,
   rateLimitPerUser: Number(process.env.RATE_LIMIT_PER_USER || 260),
   globalRateLimit: Number(process.env.GLOBAL_RATE_LIMIT || 2500),
-  useServerQueue: true,
+  useServerQueue: false,
+  automationMode: 'secure_session',
+  preparationLeadMs: Number(process.env.PREPARATION_LEAD_MS || 180000),
+  preparationTimeoutMs: Number(process.env.PREPARATION_TIMEOUT_MS || 300000),
+  autoSubmitWhenSecurityReady: true,
   officialTicketEndpoint: env.officialTicketEndpoint,
   targetEndpoint: env.targetEndpoint,
   targetPage: env.targetPage,
@@ -54,9 +67,12 @@ const defaultConfig = {
 };
 
 const initialDb = {
+  schemaVersion: 2,
   students: {},
   requests: {},
   ticketQueue: {},
+  preparations: {},
+  preparationEvents: [],
   attempts: [],
   usedIdempotencyKeys: {},
   lastHistoryCleanupAt: null,
@@ -76,7 +92,31 @@ async function loadDb() {
   try {
     const text = await fs.readFile(dbPath, 'utf8');
     const loaded = JSON.parse(text);
-    return { ...initialDb, ...loaded, config: { ...defaultConfig, ...(loaded.config || {}) } };
+    const migrated = {
+      ...initialDb,
+      ...loaded,
+      preparations: loaded.preparations || {},
+      preparationEvents: loaded.preparationEvents || [],
+      config: { ...defaultConfig, ...(loaded.config || {}) }
+    };
+    if (Number(loaded.schemaVersion || 1) < 2) {
+      migrated.schemaVersion = 2;
+      migrated.config.useServerQueue = false;
+      migrated.config.automationMode = 'secure_session';
+      migrated.config.targetMode = 'secure_webview';
+      migrated.config.maxAttempts = 1;
+      migrated.config.parallelAttemptsPerUser = 1;
+      migrated.config.globalConcurrentAttempts = 1;
+      for (const job of Object.values(migrated.ticketQueue || {})) {
+        if (job.status === 'queued' || job.status === 'running') {
+          job.status = 'cancelled';
+          job.finishedAt = new Date().toISOString();
+          job.lastStatus = 'cancelled';
+          job.lastMessage = 'Cola antigua cancelada por migracion a sesion segura.';
+        }
+      }
+    }
+    return migrated;
   } catch {
     await fs.mkdir(dataDir, { recursive: true });
     await fs.writeFile(dbPath, JSON.stringify(initialDb, null, 2));
@@ -99,6 +139,15 @@ function validateStudentPayload(body) {
   if (!/^[a-zA-Z0-9]{6,16}$/.test(dni)) return { error: 'DNI invalido. Use 6 a 16 caracteres alfanumericos.' };
   if (!/^[a-zA-Z0-9-]{4,24}$/.test(codigo)) return { error: 'Codigo invalido. Use 4 a 24 caracteres alfanumericos.' };
   return { dni, codigo, id: `${dni}:${codigo}` };
+}
+
+function findStudentByCredentials(dni, codigo) {
+  const normalizedDni = clean(dni);
+  const normalizedCode = clean(codigo).toUpperCase();
+  return Object.values(db.students).find((student) => (
+    clean(student.dni) === normalizedDni
+    && clean(student.codigo).toUpperCase() === normalizedCode
+  )) || null;
 }
 
 function targetDate(config = db.config, now = new Date()) {
@@ -141,6 +190,97 @@ function nextLimaNoon(value = new Date()) {
   const target = limaNoonUtc(value);
   if (target.getTime() <= new Date(value).getTime()) target.setUTCDate(target.getUTCDate() + 1);
   return target;
+}
+
+function preparationDedupeKey(studentId, targetAt, purpose = 'registration') {
+  return `${studentId}:${limaDayKey(targetAt)}:${purpose}`;
+}
+
+function hashPreparationToken(token) {
+  return crypto
+    .createHmac('sha256', env.preparationTokenSecret || 'local-development-only')
+    .update(String(token || ''))
+    .digest('hex');
+}
+
+function safeTokenEqual(expectedHash, token) {
+  const actualHash = hashPreparationToken(token);
+  const left = Buffer.from(String(expectedHash || ''));
+  const right = Buffer.from(actualHash);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function publicPreparation(preparation) {
+  if (!preparation) return null;
+  const {
+    reportTokenHash: _reportTokenHash,
+    reportTokenHashes: _reportTokenHashes,
+    ...safe
+  } = preparation;
+  return safe;
+}
+
+function addPreparationEvent(preparation, status, message, details = null) {
+  const event = {
+    id: nanoid(),
+    preparationId: preparation.id,
+    studentId: preparation.studentId,
+    dni: preparation.dni,
+    codigo: preparation.codigo,
+    status,
+    message,
+    details,
+    createdAt: new Date().toISOString()
+  };
+  db.preparationEvents.unshift(event);
+  if (db.preparationEvents.length > 3000) db.preparationEvents = db.preparationEvents.slice(0, 3000);
+  return event;
+}
+
+function latestPreparationForStudent(studentId) {
+  return Object.values(db.preparations || {})
+    .filter((item) => item.studentId === studentId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] || null;
+}
+
+function preparationForDay(studentId, targetAt, purpose = 'registration') {
+  const dedupeKey = preparationDedupeKey(studentId, targetAt, purpose);
+  return Object.values(db.preparations || {})
+    .filter((item) => item.dedupeKey === dedupeKey)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] || null;
+}
+
+async function transitionPreparation(preparation, status, {
+  message,
+  details,
+  ticket
+} = {}) {
+  if (SUCCESS_PREPARATION_STATUSES.has(preparation.status)) return preparation;
+  if (!canTransitionPreparation(preparation.status, status)) {
+    const error = new Error(`Transicion invalida: ${preparation.status} -> ${status}.`);
+    error.code = 'invalid_transition';
+    throw error;
+  }
+  preparation.status = status;
+  preparation.message = clean(message) || preparationStatusMessage(status);
+  preparation.updatedAt = new Date().toISOString();
+  if (ticket && typeof ticket === 'object') preparation.ticket = ticket;
+  if (TERMINAL_PREPARATION_STATUSES.has(status)) preparation.finishedAt = preparation.updatedAt;
+  addPreparationEvent(preparation, status, preparation.message, details || null);
+
+  if (SUCCESS_PREPARATION_STATUSES.has(status) && !preparation.creditConsumedAt) {
+    const student = db.students[preparation.studentId];
+    const alreadyUsedToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey(preparation.targetAt));
+    if (student && !alreadyUsedToday) {
+      student.credits = Math.max(0, Number(student.credits || 0) - 1);
+      student.lastSuccessAt = preparation.updatedAt;
+    } else if (student && alreadyUsedToday) {
+      student.lastSuccessAt = preparation.updatedAt;
+    }
+    preparation.creditConsumedAt = preparation.updatedAt;
+  }
+  await saveDb();
+  return preparation;
 }
 
 function requireAdmin(req, res, next) {
@@ -701,7 +841,8 @@ app.post('/api/student/:id/request-access', async (req, res) => {
 });
 
 app.get('/api/student/:id/status', (req, res) => {
-  const student = db.students[req.params.id];
+  const [dni = '', ...codeParts] = decodeURIComponent(req.params.id).split(':');
+  const student = db.students[req.params.id] || findStudentByCredentials(dni, codeParts.join(':'));
   const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
   res.json({ ok: true, student: student || null, authorized: Boolean(student && student.status === 'approved' && (Number(student.credits) > 0 || hasTicketToday)), hasTicketToday });
 });
@@ -742,92 +883,140 @@ app.post('/api/student/:id/use-credit', async (req, res) => {
 });
 
 app.post('/api/attempts/run', async (req, res) => {
-  const parsed = validateStudentPayload(req.body);
-  if (parsed.error) return res.status(400).json({ ok: false, message: parsed.error });
-  const student = db.students[parsed.id];
-  const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
-  if (!student || student.status !== 'approved' || (Number(student.credits) <= 0 && !hasTicketToday)) {
-    return res.status(403).json({ ok: false, status: 'not_authorized', message: 'Alumno sin autorizacion o sin cupos.' });
-  }
-  const result = await runControlledAttempts(student, clean(req.body.clientId) || 'student-app');
-  res.status(result.status === 'rate_limit' ? 429 : 200).json(result);
+  res.status(410).json({
+    ok: false,
+    status: 'legacy_automation_disabled',
+    message: 'Los disparos API fueron desactivados porque la web oficial exige Turnstile, CSRF y fingerprint.'
+  });
 });
 
 app.post('/api/queue/arm', async (req, res) => {
+  res.status(410).json({
+    ok: false,
+    status: 'legacy_queue_disabled',
+    message: 'La cola de disparos fue reemplazada por preparacion de sesion segura.'
+  });
+});
+
+app.post('/api/preparations/start', async (req, res) => {
   const parsed = validateStudentPayload(req.body);
   if (parsed.error) return res.status(400).json({ ok: false, message: parsed.error });
-  if (!db.config.useServerQueue) {
-    return res.status(409).json({ ok: false, status: 'queue_disabled', message: 'La cola Railway esta desactivada por el administrador.' });
-  }
-  const student = db.students[parsed.id];
+  const student = findStudentByCredentials(parsed.dni, parsed.codigo);
   const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
   if (!student || student.status !== 'approved' || (Number(student.credits) <= 0 && !hasTicketToday)) {
     return res.status(403).json({ ok: false, status: 'not_authorized', message: 'Alumno sin autorizacion o sin cupos.' });
   }
 
-  const target = targetDate(db.config);
-  const startAt = queueWindowStartDate(db.config);
-  const existing = findActiveQueueJob(parsed.id, target.toISOString());
-  if (existing) {
-    if (existing.status === 'queued') {
-      existing.dni = parsed.dni;
-      existing.codigo = parsed.codigo;
-      existing.dedupeKey = queueDedupeKey(parsed.id, target.toISOString());
-      existing.startAt = startAt.toISOString();
-      existing.targetAt = target.toISOString();
-      existing.maxAttempts = Number(db.config.maxAttempts || 0);
-      existing.intervalMs = Number(db.config.intervalMs || 0);
-      existing.postFireMs = Number(db.config.postFireMs || 0);
-      existing.parallelAttemptsPerUser = Number(db.config.parallelAttemptsPerUser || 0);
-      existing.globalConcurrentAttempts = Number(db.config.globalConcurrentAttempts || 0);
-      existing.lastStatus = 'queued';
-      existing.lastMessage = 'Programacion actualizada con la configuracion vigente.';
-      existing.updatedAt = new Date().toISOString();
-      existing.result = null;
-      await saveDb();
-    }
-    if (existing.status === 'queued') scheduleQueueJob(existing);
-    return res.json({ ok: true, status: existing.status, reused: true, updated: existing.status === 'queued', job: existing, targetTime: existing.targetAt, startAt: existing.startAt });
+  const purpose = req.body.purpose === 'verify' ? 'verify' : 'registration';
+  const target = purpose === 'verify' ? new Date() : targetDate(db.config);
+  const recommendedOpenAt = new Date(target.getTime() - Number(db.config.preparationLeadMs || 180000));
+  if (purpose === 'registration' && Date.now() < recommendedOpenAt.getTime()) {
+    return res.status(409).json({
+      ok: false,
+      status: 'too_early',
+      message: `La preparacion estara disponible desde ${recommendedOpenAt.toISOString()}.`,
+      recommendedOpenAt: recommendedOpenAt.toISOString(),
+      targetAt: target.toISOString()
+    });
+  }
+  const existing = preparationForDay(student.id, target.toISOString(), purpose);
+  const samePurpose = existing?.purpose === purpose || (!existing?.purpose && purpose === 'registration');
+  if (existing && samePurpose && (ACTIVE_PREPARATION_STATUSES.has(existing.status) || SUCCESS_PREPARATION_STATUSES.has(existing.status))) {
+    const reportToken = crypto.randomBytes(24).toString('base64url');
+    const previousHashes = existing.reportTokenHashes || (existing.reportTokenHash ? [existing.reportTokenHash] : []);
+    existing.reportTokenHashes = [...previousHashes, hashPreparationToken(reportToken)].slice(-3);
+    delete existing.reportTokenHash;
+    existing.updatedAt = new Date().toISOString();
+    existing.message = ACTIVE_PREPARATION_STATUSES.has(existing.status)
+      ? 'Sesion segura ya preparada.'
+      : existing.message;
+    await saveDb();
+    return res.json({
+      ok: true,
+      reused: true,
+      preparation: publicPreparation(existing),
+      reportToken
+    });
   }
 
-  const job = {
+  const reportToken = crypto.randomBytes(24).toString('base64url');
+  const preparation = {
     id: nanoid(),
-    dedupeKey: queueDedupeKey(parsed.id, target.toISOString()),
-    studentId: parsed.id,
-    dni: parsed.dni,
-    codigo: parsed.codigo,
-    status: 'queued',
-    queuedAt: new Date().toISOString(),
-    startAt: startAt.toISOString(),
+    dedupeKey: preparationDedupeKey(student.id, target.toISOString(), purpose),
+    studentId: student.id,
+    dni: student.dni,
+    codigo: student.codigo,
+    purpose,
+    status: 'prepared',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     targetAt: target.toISOString(),
-    attemptsRun: 0,
-    maxAttempts: Number(db.config.maxAttempts || 0),
-    intervalMs: Number(db.config.intervalMs || 0),
-    postFireMs: Number(db.config.postFireMs || 0),
-    parallelAttemptsPerUser: Number(db.config.parallelAttemptsPerUser || 0),
-    globalConcurrentAttempts: Number(db.config.globalConcurrentAttempts || 0),
-    lastStatus: 'queued',
-    lastMessage: 'Cola Railway armada.',
-    result: null
+    recommendedOpenAt: purpose === 'verify' ? new Date().toISOString() : recommendedOpenAt.toISOString(),
+    deadlineAt: new Date(target.getTime() + Number(db.config.preparationTimeoutMs || 300000)).toISOString(),
+    message: preparationStatusMessage('prepared'),
+    reportTokenHashes: [hashPreparationToken(reportToken)],
+    ticket: null,
+    creditConsumedAt: null
   };
-  db.ticketQueue[job.id] = job;
+  db.preparations[preparation.id] = preparation;
+  addPreparationEvent(preparation, 'prepared', preparation.message);
   await saveDb();
-  scheduleQueueJob(job);
-  res.json({ ok: true, status: 'queued', job, targetTime: job.targetAt, startAt: job.startAt });
+  res.status(201).json({
+    ok: true,
+    reused: false,
+    preparation: publicPreparation(preparation),
+    reportToken
+  });
 });
 
 app.get('/api/queue/:jobId/status', (req, res) => {
-  const job = db.ticketQueue?.[req.params.jobId];
-  if (!job) return res.status(404).json({ ok: false, message: 'Cola no encontrada.' });
-  res.json({ ok: true, job });
+  res.status(410).json({ ok: false, status: 'legacy_queue_disabled', message: 'Consulte /api/preparations/:id/status.' });
 });
 
 app.get('/api/student/:id/queue', (req, res) => {
-  const jobs = Object.values(db.ticketQueue || {})
-    .filter((job) => job.studentId === req.params.id)
-    .sort((a, b) => new Date(b.queuedAt).getTime() - new Date(a.queuedAt).getTime())
+  res.status(410).json({ ok: false, status: 'legacy_queue_disabled', message: 'Consulte /api/student/:id/preparations.' });
+});
+
+app.get('/api/preparations/:id/status', (req, res) => {
+  const preparation = db.preparations?.[req.params.id];
+  if (!preparation) return res.status(404).json({ ok: false, message: 'Preparacion no encontrada.' });
+  res.json({ ok: true, preparation: publicPreparation(preparation) });
+});
+
+app.post('/api/preparations/:id/report', async (req, res) => {
+  const preparation = db.preparations?.[req.params.id];
+  if (!preparation) return res.status(404).json({ ok: false, message: 'Preparacion no encontrada.' });
+  const reportToken = req.get('X-Preparation-Token') || clean(req.body.reportToken);
+  const reportTokenHashes = preparation.reportTokenHashes || (preparation.reportTokenHash ? [preparation.reportTokenHash] : []);
+  if (!reportTokenHashes.some((hash) => safeTokenEqual(hash, reportToken))) {
+    return res.status(401).json({ ok: false, message: 'Token de preparacion invalido.' });
+  }
+  const status = clean(req.body.status).toLowerCase();
+  const allowed = new Set([
+    ...ACTIVE_PREPARATION_STATUSES,
+    ...TERMINAL_PREPARATION_STATUSES
+  ]);
+  if (!allowed.has(status)) return res.status(400).json({ ok: false, message: 'Estado de preparacion invalido.' });
+  try {
+    await transitionPreparation(preparation, status, {
+      message: req.body.message,
+      details: req.body.details,
+      ticket: req.body.ticket
+    });
+    res.json({ ok: true, preparation: publicPreparation(preparation) });
+  } catch (error) {
+    res.status(error.code === 'invalid_transition' ? 409 : 500).json({ ok: false, message: error.message });
+  }
+});
+
+app.get('/api/student/:id/preparations', (req, res) => {
+  const [dni = '', ...codeParts] = decodeURIComponent(req.params.id).split(':');
+  const student = db.students[req.params.id] || findStudentByCredentials(dni, codeParts.join(':'));
+  const preparations = Object.values(db.preparations || {})
+    .filter((item) => item.studentId === (student?.id || req.params.id))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 10);
-  res.json({ ok: true, jobs });
+  res.json({ ok: true, preparations: preparations.map(publicPreparation) });
 });
 
 app.post('/admin/login', (req, res) => {
@@ -877,10 +1066,26 @@ app.post('/admin/requests/:id/approve', requireAdmin, async (req, res) => {
 });
 
 app.post('/admin/config', requireAdmin, async (req, res) => {
-  const allowed = ['targetHour', 'targetMinute', 'targetSecond', 'targetMs', 'preFireMs', 'postFireMs', 'maxAttempts', 'intervalMs', 'requestTimeoutMs', 'parallelAttemptsPerUser', 'globalConcurrentAttempts', 'stopOnFirstSuccess', 'rateLimitPerUser', 'globalRateLimit', 'useServerQueue', 'officialTicketEndpoint', 'targetEndpoint', 'targetPage', 'targetMode', 'selectors'];
+  const allowed = [
+    'targetHour',
+    'targetMinute',
+    'targetSecond',
+    'targetMs',
+    'preparationLeadMs',
+    'preparationTimeoutMs',
+    'autoSubmitWhenSecurityReady',
+    'targetPage',
+    'selectors'
+  ];
   for (const key of allowed) {
     if (req.body[key] !== undefined) db.config[key] = req.body[key];
   }
+  db.config.useServerQueue = false;
+  db.config.automationMode = 'secure_session';
+  db.config.targetMode = 'secure_webview';
+  db.config.maxAttempts = 1;
+  db.config.parallelAttemptsPerUser = 1;
+  db.config.globalConcurrentAttempts = 1;
   await saveDb();
   res.json({ ok: true, config: db.config });
 });
@@ -888,15 +1093,31 @@ app.post('/admin/config', requireAdmin, async (req, res) => {
 app.get('/admin/attempts', requireAdmin, (_req, res) => res.json({ ok: true, attempts: db.attempts.slice(0, 500) }));
 
 app.get('/admin/queue', requireAdmin, (_req, res) => {
-  const jobs = Object.values(db.ticketQueue || {})
-    .sort((a, b) => new Date(b.queuedAt || b.startedAt || 0).getTime() - new Date(a.queuedAt || a.startedAt || 0).getTime())
+  const jobs = Object.values(db.preparations || {})
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     .slice(0, 500);
-  res.json({ ok: true, jobs });
+  res.json({ ok: true, jobs: jobs.map(publicPreparation), legacyAlias: true });
+});
+
+app.get('/admin/preparations', requireAdmin, (_req, res) => {
+  const preparations = Object.values(db.preparations || {})
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+    .slice(0, 500);
+  res.json({ ok: true, preparations: preparations.map(publicPreparation) });
+});
+
+app.get('/admin/preparation-events', requireAdmin, (_req, res) => {
+  res.json({ ok: true, events: db.preparationEvents.slice(0, 1000) });
 });
 
 app.get('/admin/stats', requireAdmin, (_req, res) => {
   const attempts = db.attempts;
   const queueJobs = Object.values(db.ticketQueue || {});
+  const preparations = Object.values(db.preparations || {});
+  const today = limaDayKey();
+  const todayPreparations = preparations.filter((item) => (
+    limaDayKey(item.targetAt || item.createdAt) === today
+  ));
   res.json({
     ok: true,
     stats: {
@@ -907,6 +1128,14 @@ app.get('/admin/stats', requireAdmin, (_req, res) => {
       failed: attempts.filter((a) => a.status !== 'success').length,
       queueActive: queueJobs.filter(queueIsActive).length,
       queueSuccess: queueJobs.filter((job) => job.status === 'success').length,
+      preparations: todayPreparations.length,
+      preparationActive: todayPreparations.filter((item) => ACTIVE_PREPARATION_STATUSES.has(item.status)).length,
+      preparationSuccess: todayPreparations.filter((item) => SUCCESS_PREPARATION_STATUSES.has(item.status)).length,
+      preparationManual: todayPreparations.filter((item) => item.status === 'manual_required').length,
+      preparationFailed: todayPreparations.filter((item) => (
+        TERMINAL_PREPARATION_STATUSES.has(item.status)
+        && !SUCCESS_PREPARATION_STATUSES.has(item.status)
+      )).length,
       creditsAvailable: Object.values(db.students).reduce((sum, student) => sum + Number(student.credits || 0), 0)
     }
   });
@@ -919,7 +1148,7 @@ app.get('*', async (req, res, next) => {
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
-await resumeQueueJobs();
+await saveDb();
 await clearMissedNoonHistory();
 scheduleDailyHistoryCleanup();
 

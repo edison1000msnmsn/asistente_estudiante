@@ -185,6 +185,10 @@ a {
   font-weight: 700;
 }
 
+.secureHero {
+  background: linear-gradient(135deg, #103452, #1e6eea 55%, #0ca58f);
+}
+
 .heroBadge {
   min-width: 94px;
   padding: 10px 12px;
@@ -347,6 +351,21 @@ a {
   color: #ff6b8a;
   letter-spacing: 0;
   text-shadow: 0 2px 12px rgba(255, 107, 138, .24);
+}
+
+.secureHint {
+  margin: 12px 0 0;
+  color: #52687d;
+  font-size: .88rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.secureActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .metaGrid {
@@ -1101,6 +1120,10 @@ a {
   }
 
   .twoCols, .configGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .secureActions {
     grid-template-columns: 1fr;
   }
 
