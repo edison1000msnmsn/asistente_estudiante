@@ -179,3 +179,32 @@ test('la cola y los disparos antiguos permanecen desactivados', async () => {
   assert.equal(attempts.response.status, 410);
   assert.equal(queue.response.status, 410);
 });
+
+test('un alumno nuevo puede solicitar cupos y no duplica solicitudes pendientes', async () => {
+  const id = '88887777:2026202600A';
+  const initial = await request(`/api/student/${encodeURIComponent(id)}/status`);
+  assert.equal(initial.response.status, 200);
+  assert.equal(initial.data.student, null);
+  assert.equal(initial.data.pendingRequest, null);
+
+  const created = await request(`/api/student/${encodeURIComponent(id)}/request-access`, {
+    method: 'POST',
+    body: JSON.stringify({ dni: '88887777', codigo: '2026202600A' })
+  });
+  assert.equal(created.response.status, 200);
+  assert.equal(created.data.request.status, 'pending');
+
+  const repeated = await request(`/api/student/${encodeURIComponent(id)}/request-access`, {
+    method: 'POST',
+    body: JSON.stringify({ dni: '88887777', codigo: '2026202600a' })
+  });
+  assert.equal(repeated.response.status, 200);
+  assert.equal(repeated.data.reused, true);
+  assert.equal(repeated.data.request.id, created.data.request.id);
+
+  const status = await request(`/api/student/${encodeURIComponent(id)}/status`);
+  assert.equal(status.response.status, 200);
+  assert.equal(status.data.student.status, 'pending');
+  assert.equal(status.data.pendingRequest.id, created.data.request.id);
+  assert.equal(status.data.authorized, false);
+});

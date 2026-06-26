@@ -150,6 +150,20 @@ function findStudentByCredentials(dni, codigo) {
   )) || null;
 }
 
+function findAccessRequestByCredentials(dni, codigo, studentId = '') {
+  const normalizedDni = clean(dni);
+  const normalizedCode = clean(codigo).toUpperCase();
+  return Object.values(db.requests)
+    .filter((request) => (
+      (studentId && request.studentId === studentId)
+      || (
+        clean(request.dni) === normalizedDni
+        && clean(request.codigo).toUpperCase() === normalizedCode
+      )
+    ))
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0] || null;
+}
+
 function targetDate(config = db.config, now = new Date()) {
   const date = new Date(now);
   date.setHours(config.targetHour, config.targetMinute, config.targetSecond, config.targetMs);
@@ -825,7 +839,12 @@ app.get('/api/config/target-time', (_req, res) => {
 app.post('/api/student/:id/request-access', async (req, res) => {
   const parsed = validateStudentPayload(req.body);
   if (parsed.error) return res.status(400).json({ ok: false, message: parsed.error });
-  const id = req.params.id || parsed.id;
+  const existingStudent = db.students[req.params.id] || findStudentByCredentials(parsed.dni, parsed.codigo);
+  const id = existingStudent?.id || req.params.id || parsed.id;
+  const existingRequest = findAccessRequestByCredentials(parsed.dni, parsed.codigo, id);
+  if (existingRequest?.status === 'pending') {
+    return res.json({ ok: true, request: existingRequest, reused: true });
+  }
   const request = {
     id: nanoid(),
     studentId: id,
@@ -844,7 +863,16 @@ app.get('/api/student/:id/status', (req, res) => {
   const [dni = '', ...codeParts] = decodeURIComponent(req.params.id).split(':');
   const student = db.students[req.params.id] || findStudentByCredentials(dni, codeParts.join(':'));
   const hasTicketToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey());
-  res.json({ ok: true, student: student || null, authorized: Boolean(student && student.status === 'approved' && (Number(student.credits) > 0 || hasTicketToday)), hasTicketToday });
+  const latestRequest = findAccessRequestByCredentials(dni, codeParts.join(':'), student?.id || req.params.id);
+  const pendingRequest = latestRequest?.status === 'pending' ? latestRequest : null;
+  res.json({
+    ok: true,
+    student: student || null,
+    authorized: Boolean(student && student.status === 'approved' && (Number(student.credits) > 0 || hasTicketToday)),
+    hasTicketToday,
+    pendingRequest,
+    latestRequest
+  });
 });
 
 app.post('/api/student/:id/use-credit', async (req, res) => {

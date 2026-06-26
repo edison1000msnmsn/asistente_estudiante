@@ -244,6 +244,9 @@ function preparationOutcome(preparation, status, id) {
   if (ACTIVE_PREPARATION_STATUSES.has(current)) {
     return { tone: 'wait', icon: Clock3, title: 'Sesion preparada', message: preparation?.message || 'La pagina oficial se esta preparando.' };
   }
+  if (sameStudent && status?.pendingRequest?.status === 'pending') {
+    return { tone: 'wait', icon: Send, title: 'Solicitud enviada', message: 'Tu solicitud de cupos esta pendiente de aprobacion del administrador.' };
+  }
   if (sameStudent && !status?.authorized && credits <= 0) {
     return { tone: 'empty', icon: Users, title: 'Sin cupos', message: 'Solicita cupos al administrador para usar el asistente.' };
   }
@@ -314,14 +317,16 @@ function SecureStudentApp({ onSwitchRole }) {
   const [autoChecked, setAutoChecked] = useState(false);
 
   const id = useMemo(() => studentId(dni, codigo), [dni, codigo]);
-  const sameStudentStatus = Boolean(status?.student && String(status.student.dni) === dni && String(status.student.codigo).toUpperCase() === codigo.toUpperCase());
+  const sameStudentRecord = Boolean(status?.student && String(status.student.dni) === dni && String(status.student.codigo).toUpperCase() === codigo.toUpperCase());
+  const sameStudentStatus = Boolean(status?.id === id || sameStudentRecord);
   const isAuthorized = sameStudentStatus && status?.authorized;
-  const studentCredits = sameStudentStatus ? Number(status?.student?.credits ?? 0) : null;
+  const studentCredits = sameStudentStatus && status?.student ? Number(status.student.credits ?? 0) : null;
+  const hasPendingRequest = Boolean(sameStudentStatus && status?.pendingRequest?.status === 'pending');
   const targetMs = config?.targetTime ? new Date(config.targetTime).getTime() : 0;
   const countdownMs = targetMs ? targetMs - (nowTick + serverOffset) : 0;
   const preparationLeadMs = Number(config?.config?.preparationLeadMs || 180000);
   const canPrepareNow = Boolean(config && countdownMs <= preparationLeadMs);
-  const showRequestAccess = Boolean(sameStudentStatus && !status?.authorized && Number(studentCredits || 0) <= 0);
+  const showRequestAccess = Boolean(dni && codigo && sameStudentStatus && !isAuthorized && Number(studentCredits || 0) <= 0 && !hasPendingRequest);
   const showCheckStatus = Boolean(dni && codigo && !sameStudentStatus);
   const outcome = errorMessage
     ? { tone: 'danger', icon: XCircle, title: 'No se pudo continuar', message: errorMessage }
@@ -511,7 +516,7 @@ function SecureStudentApp({ onSwitchRole }) {
           <strong>{isAuthorized ? 'Listo para preparar' : 'Verifica tu cupo'}</strong>
           <span>{isAuthorized ? 'La app precarga la sesion oficial y espera su validacion' : 'Consulta tu autorizacion para continuar'}</span>
         </div>
-        <div className="heroBadge">{sameStudentStatus ? `${studentCredits ?? 0} cupos` : 'Sin verificar'}</div>
+        <div className="heroBadge">{hasPendingRequest ? 'Solicitud pendiente' : sameStudentStatus ? `${studentCredits ?? 0} cupos` : 'Sin verificar'}</div>
       </section>
 
       <main className="studentGrid">
