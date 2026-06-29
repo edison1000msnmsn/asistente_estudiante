@@ -285,13 +285,15 @@ async function transitionPreparation(preparation, status, {
   if (SUCCESS_PREPARATION_STATUSES.has(status) && !preparation.creditConsumedAt) {
     const student = db.students[preparation.studentId];
     const alreadyUsedToday = Boolean(student?.lastSuccessAt && limaDayKey(student.lastSuccessAt) === limaDayKey(preparation.targetAt));
-    if (student && !alreadyUsedToday) {
+    const verificationOnly = preparation.purpose === 'verify' || status === 'already_issued';
+    if (student && !alreadyUsedToday && !verificationOnly) {
       student.credits = Math.max(0, Number(student.credits || 0) - 1);
       student.lastSuccessAt = preparation.updatedAt;
-    } else if (student && alreadyUsedToday) {
+    } else if (student) {
       student.lastSuccessAt = preparation.updatedAt;
     }
-    preparation.creditConsumedAt = preparation.updatedAt;
+    if (verificationOnly) preparation.verifiedAt = preparation.updatedAt;
+    else preparation.creditConsumedAt = preparation.updatedAt;
   }
   await saveDb();
   return preparation;
@@ -963,7 +965,8 @@ app.post('/api/preparations/start', async (req, res) => {
       ok: true,
       reused: true,
       preparation: publicPreparation(existing),
-      reportToken
+      reportToken,
+      serverNowEpochMs: Date.now()
     });
   }
 
@@ -993,7 +996,8 @@ app.post('/api/preparations/start', async (req, res) => {
     ok: true,
     reused: false,
     preparation: publicPreparation(preparation),
-    reportToken
+    reportToken,
+    serverNowEpochMs: Date.now()
   });
 });
 

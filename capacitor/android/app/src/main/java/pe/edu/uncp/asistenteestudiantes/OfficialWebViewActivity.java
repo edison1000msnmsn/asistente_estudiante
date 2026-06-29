@@ -1,6 +1,7 @@
 package pe.edu.uncp.asistenteestudiantes;
 
 import android.app.Activity;
+import android.annotation.TargetApi;
 import android.content.ContentValues;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -13,7 +14,11 @@ import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
+import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -36,10 +41,19 @@ import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class OfficialWebViewActivity extends Activity {
+    private static final long[] FORM_RECOVERY_DELAYS_MS = {0, 1400, 3200, 6500, 11000};
+    private static final long[] PRELOAD_RECOVERY_DELAYS_MS = {900, 2500, 6000};
+    private static final long CLOSED_GRACE_MS = 8000;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final SimpleDateFormat clock = new SimpleDateFormat("HH:mm:ss", Locale.US);
+    private final ExecutorService reportExecutor = Executors.newSingleThreadExecutor();
 
     private WebView webView;
     private TextView statusText;
@@ -52,15 +66,24 @@ public class OfficialWebViewActivity extends Activity {
     private String preparationId;
     private String reportToken;
     private String purpose;
+    private String targetUrl;
     private long fireAt;
     private long deadlineAt;
+    private long clockOffsetMs;
     private boolean autoSubmit;
     private boolean stopped = false;
     private boolean submitted = false;
     private boolean terminal = false;
     private boolean pageLoaded = false;
+    private boolean inspectionInFlight = false;
     private boolean formSeen = false;
+    private boolean formVisible = false;
     private boolean securityReadySeen = false;
+    private boolean mainFrameLoadFailed = false;
+    private boolean preloadRecoveryScheduled = false;
+    private int preloadRecoveryAttempt = 0;
+    private int recoveryAttempt = 0;
+    private long pageLoadStartedAt = 0;
     private String lastReportedStatus = "";
     private String lastUiStatus = "";
     private long lastLogAt = 0;
@@ -76,7 +99,7 @@ public class OfficialWebViewActivity extends Activity {
             return;
         }
 
-        String targetUrl = value(uri, "url", "https://comedor.uncp.edu.pe/charola");
+        targetUrl = value(uri, "url", "https://comedor.uncp.edu.pe/charola");
         dni = value(uri, "dni", "");
         codigo = value(uri, "codigo", "");
         apiBase = value(uri, "apiBase", "");
@@ -85,6 +108,7 @@ public class OfficialWebViewActivity extends Activity {
         purpose = value(uri, "purpose", "registration");
         fireAt = parseLong(value(uri, "fireAt", "0"), System.currentTimeMillis());
         deadlineAt = parseLong(value(uri, "deadlineAt", "0"), fireAt + 300000);
+        clockOffsetMs = parseLong(value(uri, "clockOffsetMs", "0"), 0);
         autoSubmit = !"0".equals(value(uri, "autoSubmit", "1"));
 
         buildLayout();
@@ -92,7 +116,7 @@ public class OfficialWebViewActivity extends Activity {
 
         log("[Sesion segura iniciada]");
         log("La pagina oficial controlara Turnstile, CSRF y fingerprint.");
-        log("La app no refrescara ni enviara solicitudes directas.");
+        log("La app conservara cookies y usara solo la sesion oficial.");
         if ("verify".equals(purpose)) {
             log("Modo verificacion inmediata.");
         } else {
@@ -103,6 +127,7 @@ public class OfficialWebViewActivity extends Activity {
 
         webView.loadUrl(targetUrl);
         handler.postDelayed(this::runSecureTick, 350);
+        scheduleExactTargetWakeup();
     }
 
     private void buildLayout() {
@@ -203,27 +228,121 @@ public class OfficialWebViewActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) settings.setOffscreenPreRaster(true);
+
+        CookieManager cookies = CookieManager.getInstance();
+        cookies.setAcceptCookie(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cookies.setAcceptThirdPartyCookies(webView, true);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 pageLoaded = false;
+                mainFrameLoadFailed = false;
+                pageLoadStartedAt = correctedNow();
                 setUiStatus("CARGANDO PAGINA OFICIAL");
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                if (mainFrameLoadFailed) {
+                    pageLoaded = false;
+                    schedulePreloadRecovery();
+                    return;
+                }
                 pageLoaded = true;
+                CookieManager.getInstance().flush();
                 log("Pagina oficial cargada. Se conserva esta misma sesion.");
                 handler.postDelayed(OfficialWebViewActivity.this::runSecureTick, 120);
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                        && failingUrl != null
+                        && failingUrl.startsWith(originOf(targetUrl))) {
+                    handleMainFrameLoadFailure("La pagina oficial no respondio; se aplicara recuperacion controlada.");
+                }
+            }
+
+            @Override
+            @TargetApi(Build.VERSION_CODES.M)
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame()) {
+                    handleMainFrameLoadFailure("La pagina oficial no respondio; se aplicara recuperacion controlada.");
+                }
+            }
+
+            private void handleMainFrameLoadFailure(String message) {
+                if (!terminal && !stopped) {
+                    pageLoaded = false;
+                    mainFrameLoadFailed = true;
+                    setUiStatus("RECUPERANDO CONEXION");
+                    occasionalLog(message);
+                    schedulePreloadRecovery();
+                    handler.postDelayed(OfficialWebViewActivity.this::runSecureTick, 250);
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+                if (request.isForMainFrame() && response.getStatusCode() >= 500) {
+                    pageLoaded = false;
+                    mainFrameLoadFailed = true;
+                    setUiStatus("SERVIDOR OFICIAL OCUPADO");
+                    occasionalLog("Servidor oficial ocupado: HTTP " + response.getStatusCode() + ".");
+                    schedulePreloadRecovery();
+                    handler.postDelayed(OfficialWebViewActivity.this::runSecureTick, 250);
+                }
             }
         });
     }
 
+    private long correctedNow() {
+        return System.currentTimeMillis() + clockOffsetMs;
+    }
+
+    private void scheduleExactTargetWakeup() {
+        long delay = Math.max(0, fireAt - correctedNow());
+        handler.postDelayed(() -> {
+            if (stopped || terminal) return;
+            log("Hora objetivo alcanzada; comprobando la sesion precargada.");
+            runSecureTick();
+        }, delay);
+    }
+
+    private void schedulePreloadRecovery() {
+        if (preloadRecoveryScheduled || stopped || terminal || correctedNow() >= fireAt) return;
+        if (preloadRecoveryAttempt >= PRELOAD_RECOVERY_DELAYS_MS.length) return;
+        long delay = PRELOAD_RECOVERY_DELAYS_MS[preloadRecoveryAttempt];
+        preloadRecoveryScheduled = true;
+        handler.postDelayed(() -> {
+            preloadRecoveryScheduled = false;
+            if (stopped || terminal || correctedNow() >= fireAt || pageLoaded || !mainFrameLoadFailed) return;
+            preloadRecoveryAttempt += 1;
+            mainFrameLoadFailed = false;
+            pageLoadStartedAt = correctedNow();
+            setUiStatus("RECUPERANDO PRECARGA");
+            log("Reintento de precarga " + preloadRecoveryAttempt + "/" + PRELOAD_RECOVERY_DELAYS_MS.length + ".");
+            webView.loadUrl(targetUrl);
+        }, delay);
+    }
+
     private void runSecureTick() {
         if (stopped || terminal || webView == null) return;
-        long now = System.currentTimeMillis();
+        long now = correctedNow();
         if (now > deadlineAt) {
             terminal = true;
             String finalStatus;
@@ -244,42 +363,63 @@ public class OfficialWebViewActivity extends Activity {
             capturePage();
             return;
         }
+        if (inspectionInFlight) {
+            handler.postDelayed(this::runSecureTick, 80);
+            return;
+        }
         inspectAndPrepare(now >= fireAt);
     }
 
     private void inspectAndPrepare(boolean targetReached) {
+        inspectionInFlight = true;
         String script = "(function(){"
                 + "function visible(el){if(!el)return false;var r=el.getBoundingClientRect();var s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';}"
-                + "function setValue(el,val){if(!el)return false;var p=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(p&&p.set)p.set.call(el,val);else el.value=val;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return String(el.value||'').toUpperCase()===String(val).toUpperCase();}"
-                + "var dni=document.querySelector('#dni,input[name=\"t1_dni\"]');"
-                + "var codigo=document.querySelector('#codigo,input[name=\"t1_codigo\"]');"
-                + "var button=document.querySelector('.btn-register,button[type=\"submit\"]');"
+                + "function find(selectors){for(var i=0;i<selectors.length;i++){var el=document.querySelector(selectors[i]);if(el)return el;}return null;}"
+                + "function setValue(el,val){if(!el)return false;if(String(el.value||'').toUpperCase()===String(val).toUpperCase())return true;var p=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(p&&p.set)p.set.call(el,val);else el.value=val;var ev;try{ev=new InputEvent('input',{bubbles:true,inputType:'insertText',data:val});}catch(e){ev=new Event('input',{bubbles:true});}el.dispatchEvent(ev);el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return String(el.value||'').toUpperCase()===String(val).toUpperCase();}"
+                + "function buttonByText(){var list=document.querySelectorAll('button,input[type=\"submit\"]');for(var i=0;i<list.length;i++){var t=(list[i].innerText||list[i].value||'').trim();if(/GENERAR\\s+(EL\\s+)?TICKET/i.test(t))return list[i];}return null;}"
+                + "var dni=find(['#dni','input[name=\"t1_dni\"]','input[name=\"dni\"]','input[formcontrolname=\"dni\"]','input[placeholder*=\"DNI\" i]']);"
+                + "var codigo=find(['#codigo','input[name=\"t1_codigo\"]','input[name=\"codigo\"]','input[formcontrolname=\"codigo\"]','input[placeholder*=\"Matrícula\" i]','input[placeholder*=\"Matricula\" i]','input[placeholder*=\"Código\" i]']);"
+                + "var button=find(['.btn-register','form button[type=\"submit\"]','button[type=\"submit\"]'])||buttonByText();"
                 + "var form=!!(dni&&codigo&&visible(dni)&&visible(codigo));"
                 + "var dniOk=form&&setValue(dni," + JSONObject.quote(dni) + ");"
                 + "var codeOk=form&&setValue(codigo," + JSONObject.quote(codigo) + ");"
                 + "var tokenEl=document.querySelector('[name=\"cf-turnstile-response\"],textarea[id^=\"cf-chl-widget-\"]');"
                 + "var token=tokenEl&&String(tokenEl.value||tokenEl.textContent||tokenEl.getAttribute('value')||'').trim()||'';"
-                + "var securityReady=token.length>20;"
-                + "var challenge=Array.prototype.some.call(document.querySelectorAll('iframe'),function(f){var s=(f.src||'')+' '+(f.title||'');return /cloudflare|challenge|turnstile/i.test(s)&&visible(f);});"
+                + "var challengeFrames=Array.prototype.filter.call(document.querySelectorAll('iframe'),function(f){var s=(f.src||'')+' '+(f.title||'');return /cloudflare|challenge|turnstile/i.test(s);});"
+                + "var securityPresent=!!tokenEl||challengeFrames.length>0||!!document.querySelector('.cf-turnstile,[data-sitekey]');"
+                + "var securityReady=token.length>20||!securityPresent;"
+                + "var challenge=challengeFrames.some(function(f){return visible(f);});"
+                + "var bodyText=(document.body&&document.body.innerText||'').slice(0,20000);"
+                + "var upper=bodyText.toUpperCase();"
+                + "var ticketDetected=/TICKET\\s+VIRTUAL\\s*#|TICKET\\s+GENERADO\\s+EXITOSAMENTE|GENERADO\\s+EXITOSAMENTE|IMPRIMIR\\s+TICKET/.test(upper);"
                 + "var clicked=false;"
-                + "if(" + targetReached + "&&" + autoSubmit + "&&form&&dniOk&&codeOk&&securityReady&&button&&!button.disabled){button.click();clicked=true;}"
-                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:!!(button&&button.disabled),securityReady:securityReady,challenge:challenge,clicked:clicked,text:(document.body&&document.body.innerText||'').slice(0,12000)});"
+                + "var disabled=!!(button&&(button.disabled||button.getAttribute('aria-disabled')==='true'));"
+                + "if(" + targetReached + "&&" + autoSubmit + "&&" + (!submitted) + "&&form&&dniOk&&codeOk&&securityReady&&button&&!disabled&&!window.__asistenteSubmitted){window.__asistenteSubmitted=true;button.click();clicked=true;}"
+                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:disabled,securityPresent:securityPresent,securityReady:securityReady,challenge:challenge,clicked:clicked,ticketDetected:ticketDetected,text:bodyText,url:location.href,title:document.title||''});"
                 + "})();";
 
         webView.evaluateJavascript(script, raw -> {
+            inspectionInFlight = false;
             if (stopped || terminal) return;
             try {
                 String decoded = String.valueOf(new JSONTokener(raw).nextValue());
                 JSONObject state = new JSONObject(decoded);
                 String text = state.optString("text", "").toUpperCase(Locale.US);
 
-                String terminalStatus = detectTerminalStatus(text);
+                String terminalStatus = state.optBoolean("ticketDetected")
+                        ? ("verify".equals(purpose) ? "already_issued" : "success")
+                        : detectTerminalStatus(text);
+                boolean reachedNow = correctedNow() >= fireAt;
+                if (terminalStatus != null && shouldDeferTerminal(terminalStatus, reachedNow)) {
+                    terminalStatus = null;
+                    maybeRecoverForm();
+                }
                 if (terminalStatus != null) {
                     terminal = true;
                     String message = terminalMessage(terminalStatus);
                     setUiStatus(prettyStatus(terminalStatus));
                     log(message);
-                    JSONObject ticket = terminalStatus.equals("success") ? extractTicketSummary(text) : null;
+                    JSONObject ticket = isSuccessStatus(terminalStatus) ? extractTicketSummary(text) : null;
                     reportStatus(terminalStatus, message, ticket);
                     capturePage();
                     return;
@@ -289,7 +429,7 @@ public class OfficialWebViewActivity extends Activity {
                 boolean securityReady = state.optBoolean("securityReady");
                 boolean challenge = state.optBoolean("challenge");
                 boolean clicked = state.optBoolean("clicked");
-                boolean reachedNow = System.currentTimeMillis() >= fireAt;
+                formVisible = form;
                 formSeen = formSeen || form;
                 securityReadySeen = securityReadySeen || securityReady;
 
@@ -304,6 +444,7 @@ public class OfficialWebViewActivity extends Activity {
                     setUiStatus("ESPERANDO FORMULARIO");
                     reportStatus("form_waiting", "Esperando que la web oficial habilite el formulario.", null);
                     occasionalLog("Esperando que aparezca el formulario oficial.");
+                    if (reachedNow) maybeRecoverForm();
                 } else if (!securityReady) {
                     setUiStatus("VALIDANDO SEGURIDAD");
                     JSONObject details = new JSONObject();
@@ -321,26 +462,67 @@ public class OfficialWebViewActivity extends Activity {
                 }
             } catch (Exception error) {
                 occasionalLog("Esperando que Angular termine de renderizar.");
+                if (correctedNow() >= fireAt) maybeRecoverForm();
             }
 
-            if (!stopped && !terminal) handler.postDelayed(this::runSecureTick, submitted ? 550 : 250);
+            if (!stopped && !terminal) handler.postDelayed(this::runSecureTick, submitted ? 450 : 180);
         });
+    }
+
+    private void maybeRecoverForm() {
+        if (stopped || terminal || submitted || formVisible || correctedNow() < fireAt) return;
+        if (recoveryAttempt >= FORM_RECOVERY_DELAYS_MS.length) return;
+
+        long now = correctedNow();
+        long dueAt = fireAt + FORM_RECOVERY_DELAYS_MS[recoveryAttempt];
+        if (now < dueAt) return;
+        if (!pageLoaded && !mainFrameLoadFailed && pageLoadStartedAt > 0 && now - pageLoadStartedAt < 6000) return;
+
+        recoveryAttempt += 1;
+        mainFrameLoadFailed = false;
+        pageLoaded = false;
+        pageLoadStartedAt = now;
+        setUiStatus("ACTUALIZANDO FORMULARIO");
+        log("Actualizacion controlada " + recoveryAttempt + "/" + FORM_RECOVERY_DELAYS_MS.length + ".");
+        String currentUrl = webView.getUrl();
+        if (currentUrl == null || !currentUrl.startsWith(originOf(targetUrl))) webView.loadUrl(targetUrl);
+        else webView.reload();
+    }
+
+    private boolean shouldDeferTerminal(String status, boolean targetReached) {
+        if (!"registration".equals(purpose)) return false;
+        if (!targetReached) return true;
+        if (!submitted && recoveryAttempt == 0) return true;
+        return "closed".equals(status)
+                && correctedNow() - fireAt < CLOSED_GRACE_MS
+                && recoveryAttempt < FORM_RECOVERY_DELAYS_MS.length;
+    }
+
+    private boolean isSuccessStatus(String status) {
+        return "success".equals(status) || "already_issued".equals(status);
     }
 
     private String detectTerminalStatus(String text) {
         if (text.contains("TICKET VIRTUAL #")
                 || text.contains("TICKET GENERADO EXITOSAMENTE")
                 || text.contains("GENERADO EXITOSAMENTE")
-                || text.contains("IMPRIMIR TICKET")) return "success";
+                || text.contains("IMPRIMIR TICKET")
+                || text.contains("DESCARGAR TICKET")) {
+            return "verify".equals(purpose) ? "already_issued" : "success";
+        }
         if (text.contains("CUPOS AGOTADOS")
                 || text.contains("SIN CUPOS DISPONIBLES")
-                || text.contains("NO QUEDAN CUPOS")) return "sold_out";
+                || text.contains("NO QUEDAN CUPOS")
+                || text.contains("CUPOS DISPONIBLES: 0")) return "sold_out";
         if (text.contains("USUARIO NO ENCONTRADO")
+                || text.contains("ALUMNO NO ENCONTRADO")
+                || text.contains("ESTUDIANTE NO EXISTE")
                 || text.contains("NO MATRICULADO")) return "invalid_student";
         if (text.contains("USUARIO RESTRINGIDO")
                 || text.contains("ACCESO RESTRINGIDO")) return "restricted";
         if (text.contains("FUERA DE HORARIO")
-                || text.contains("REGISTRO CERRADO")) return "closed";
+                || text.contains("REGISTRO CERRADO")
+                || text.contains("FORMULARIO CERRADO")) return "closed";
         return null;
     }
 
@@ -348,6 +530,8 @@ public class OfficialWebViewActivity extends Activity {
         switch (status) {
             case "success":
                 return "La pagina oficial confirmo el ticket.";
+            case "already_issued":
+                return "La pagina oficial recupero un ticket ya emitido.";
             case "sold_out":
                 return "La pagina oficial informa que no quedan cupos.";
             case "invalid_student":
@@ -372,6 +556,8 @@ public class OfficialWebViewActivity extends Activity {
             ticket.put("dni", dni);
             ticket.put("codigo", codigo);
             ticket.put("capturedAtEpochMs", System.currentTimeMillis());
+            Matcher matcher = Pattern.compile("TICKET\\s+VIRTUAL\\s*#?\\s*(\\d+)", Pattern.CASE_INSENSITIVE).matcher(text);
+            if (matcher.find()) ticket.put("ticketNumber", matcher.group(1));
         } catch (Exception ignored) {
         }
         return ticket;
@@ -382,37 +568,63 @@ public class OfficialWebViewActivity extends Activity {
         if (status.equals(lastReportedStatus) && !status.equals("submitted")) return;
         lastReportedStatus = status;
 
-        new Thread(() -> {
-            HttpURLConnection connection = null;
-            try {
-                String normalizedBase = apiBase.endsWith("/") ? apiBase.substring(0, apiBase.length() - 1) : apiBase;
-                URL url = new URL(normalizedBase + "/api/preparations/" + preparationId + "/report");
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("POST");
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(5000);
-                connection.setRequestProperty("Content-Type", "application/json");
-                connection.setRequestProperty("X-Preparation-Token", reportToken);
-                connection.setDoOutput(true);
+        reportExecutor.execute(() -> {
+            int maxTries = isTerminalStatus(status) ? 4 : 1;
+            for (int attempt = 1; attempt <= maxTries; attempt++) {
+                HttpURLConnection connection = null;
+                try {
+                    String normalizedBase = apiBase.endsWith("/") ? apiBase.substring(0, apiBase.length() - 1) : apiBase;
+                    URL url = new URL(normalizedBase + "/api/preparations/" + preparationId + "/report");
+                    connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("POST");
+                    connection.setConnectTimeout(3000);
+                    connection.setReadTimeout(3000);
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    connection.setRequestProperty("X-Preparation-Token", reportToken);
+                    connection.setDoOutput(true);
 
-                JSONObject body = new JSONObject();
-                body.put("status", status);
-                body.put("message", message);
-                if (details != null) {
-                    if (status.equals("success")) body.put("ticket", details);
-                    else body.put("details", details);
+                    JSONObject body = new JSONObject();
+                    body.put("status", status);
+                    body.put("message", message);
+                    if (details != null) {
+                        if (isSuccessStatus(status)) body.put("ticket", details);
+                        else body.put("details", details);
+                    }
+                    OutputStream out = connection.getOutputStream();
+                    out.write(body.toString().getBytes("UTF-8"));
+                    out.flush();
+                    out.close();
+                    int responseCode = connection.getResponseCode();
+                    readStream(responseCode < 400 ? connection.getInputStream() : connection.getErrorStream());
+                    if (responseCode < 500) return;
+                } catch (Exception ignored) {
+                    // A terminal result is retried below without interrupting the official page.
+                } finally {
+                    if (connection != null) connection.disconnect();
                 }
-                OutputStream out = connection.getOutputStream();
-                out.write(body.toString().getBytes("UTF-8"));
-                out.flush();
-                out.close();
-                readStream(connection.getResponseCode() < 400 ? connection.getInputStream() : connection.getErrorStream());
-            } catch (Exception error) {
-                handler.post(() -> occasionalLog("Sin conexion con Railway; la pagina oficial sigue activa."));
-            } finally {
-                if (connection != null) connection.disconnect();
+                if (attempt < maxTries) {
+                    try {
+                        Thread.sleep(350L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
             }
-        }).start();
+            handler.post(() -> occasionalLog("Sin conexion con Railway; el resultado queda visible en la sesion oficial."));
+        });
+    }
+
+    private boolean isTerminalStatus(String status) {
+        return isSuccessStatus(status)
+                || "sold_out".equals(status)
+                || "closed".equals(status)
+                || "invalid_student".equals(status)
+                || "restricted".equals(status)
+                || "manual_required".equals(status)
+                || "timeout".equals(status)
+                || "cancelled".equals(status)
+                || "failed".equals(status);
     }
 
     private void capturePage() {
@@ -503,6 +715,33 @@ public class OfficialWebViewActivity extends Activity {
         else super.onBackPressed();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) webView.onResume();
+        if (!stopped && !terminal) handler.post(this::runSecureTick);
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) webView.onPause();
+        CookieManager.getInstance().flush();
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        CookieManager.getInstance().flush();
+        if (webView != null) {
+            webView.stopLoading();
+            webView.destroy();
+            webView = null;
+        }
+        reportExecutor.shutdown();
+        super.onDestroy();
+    }
+
     private String value(Uri uri, String key, String fallback) {
         String found = uri.getQueryParameter(key);
         return found == null ? fallback : found;
@@ -518,5 +757,14 @@ public class OfficialWebViewActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private String originOf(String value) {
+        try {
+            Uri parsed = Uri.parse(value);
+            return parsed.getScheme() + "://" + parsed.getAuthority();
+        } catch (Exception error) {
+            return value;
+        }
     }
 }

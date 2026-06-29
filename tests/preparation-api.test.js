@@ -105,6 +105,7 @@ test('crea una sola preparacion, protege reportes y descuenta una sola vez', asy
   assert.equal(first.response.status, 201);
   assert.equal(first.data.preparation.status, 'prepared');
   assert.ok(first.data.reportToken);
+  assert.ok(Number.isFinite(first.data.serverNowEpochMs));
 
   const repeated = await request('/api/preparations/start', { method: 'POST', body: payload });
   assert.equal(repeated.response.status, 200);
@@ -150,7 +151,7 @@ test('crea una sola preparacion, protege reportes y descuenta una sola vez', asy
   assert.equal(status.data.hasTicketToday, true);
 });
 
-test('rechaza saltar directamente de preparado a exito', async () => {
+test('recupera directamente un ticket existente sin descontar otro cupo', async () => {
   const created = await request('/api/preparations/start', {
     method: 'POST',
     body: JSON.stringify({
@@ -162,9 +163,14 @@ test('rechaza saltar directamente de preparado a exito', async () => {
   const report = await request(`/api/preparations/${created.data.preparation.id}/report`, {
     method: 'POST',
     headers: { 'X-Preparation-Token': created.data.reportToken },
-    body: JSON.stringify({ status: 'success' })
+    body: JSON.stringify({ status: 'already_issued' })
   });
-  assert.equal(report.response.status, 409);
+  assert.equal(report.response.status, 200);
+  assert.equal(report.data.preparation.status, 'already_issued');
+  assert.ok(report.data.preparation.verifiedAt);
+
+  const status = await request('/api/student/72769843%3A2021200783B/status');
+  assert.equal(status.data.student.credits, 1);
 });
 
 test('la cola y los disparos antiguos permanecen desactivados', async () => {

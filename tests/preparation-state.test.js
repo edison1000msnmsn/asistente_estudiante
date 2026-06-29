@@ -22,9 +22,10 @@ test('un resultado terminal no puede ser sobrescrito', () => {
   assert.equal(canTransitionPreparation('sold_out', 'success'), false);
 });
 
-test('rechaza saltos que inventarian una confirmacion', () => {
-  assert.equal(canTransitionPreparation('prepared', 'success'), false);
-  assert.equal(canTransitionPreparation('security_pending', 'success'), false);
+test('acepta un ticket que la pagina oficial muestra directamente', () => {
+  assert.equal(canTransitionPreparation('prepared', 'success'), true);
+  assert.equal(canTransitionPreparation('page_loading', 'already_issued'), true);
+  assert.equal(canTransitionPreparation('security_pending', 'success'), true);
   assert.equal(canTransitionPreparation('form_waiting', 'submitted'), false);
 });
 

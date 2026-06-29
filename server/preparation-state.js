@@ -23,12 +23,12 @@ export const TERMINAL_PREPARATION_STATUSES = new Set([
 ]);
 
 const TRANSITIONS = {
-  prepared: new Set(['page_loading', 'cancelled', 'failed']),
-  page_loading: new Set(['form_waiting', 'security_pending', 'security_ready', 'manual_required', 'closed', 'timeout', 'failed']),
-  form_waiting: new Set(['security_pending', 'security_ready', 'manual_required', 'closed', 'timeout', 'failed']),
-  security_pending: new Set(['security_ready', 'manual_required', 'closed', 'timeout', 'failed']),
-  security_ready: new Set(['ready_to_submit', 'submitted', 'manual_required', 'closed', 'timeout', 'failed']),
-  ready_to_submit: new Set(['submitted', 'manual_required', 'closed', 'timeout', 'failed']),
+  prepared: new Set(['page_loading', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'cancelled', 'failed']),
+  page_loading: new Set(['form_waiting', 'security_pending', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  form_waiting: new Set(['security_pending', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  security_pending: new Set(['security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  security_ready: new Set(['ready_to_submit', 'submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  ready_to_submit: new Set(['submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
   submitted: new Set(['success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'timeout', 'failed'])
 };
 

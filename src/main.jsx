@@ -389,6 +389,7 @@ function SecureStudentApp({ onSwitchRole }) {
   }
 
   function addHistory(nextPreparation) {
+    if (nextPreparation?.purpose === 'verify') return;
     const entry = preparationHistoryEntry(nextPreparation);
     setHistory((items) => {
       const next = [entry, ...items.filter((item) => item.preparationId !== entry.preparationId)].slice(0, 30);
@@ -398,8 +399,10 @@ function SecureStudentApp({ onSwitchRole }) {
   }
 
   async function refreshConfig() {
-    const [time, target] = await Promise.all([api('/api/time'), api('/api/config/target-time')]);
-    setServerOffset(Number(time.epochMs) - Date.now());
+    const sentAt = Date.now();
+    const timeRequest = api('/api/time').then((data) => ({ data, receivedAt: Date.now() }));
+    const [sample, target] = await Promise.all([timeRequest, api('/api/config/target-time')]);
+    setServerOffset(Number(sample.data.epochMs) - Math.round((sentAt + sample.receivedAt) / 2));
     setConfig(target);
     return target;
   }
@@ -447,7 +450,7 @@ function SecureStudentApp({ onSwitchRole }) {
     }
   }
 
-  function openSecureSession(nextPreparation, reportToken) {
+  function openSecureSession(nextPreparation, reportToken, sessionClockOffset = serverOffset) {
     const params = new URLSearchParams({
       url: config?.config?.targetPage || TARGET_PAGE,
       dni,
@@ -457,6 +460,7 @@ function SecureStudentApp({ onSwitchRole }) {
       apiBase: API_BASE || location.origin,
       fireAt: String(new Date(nextPreparation.targetAt).getTime()),
       deadlineAt: String(new Date(nextPreparation.deadlineAt).getTime()),
+      clockOffsetMs: String(Math.round(sessionClockOffset)),
       purpose: nextPreparation.purpose || 'registration',
       autoSubmit: config?.config?.autoSubmitWhenSecurityReady === false ? '0' : '1'
     });
@@ -472,12 +476,18 @@ function SecureStudentApp({ onSwitchRole }) {
     setBusy(true);
     setErrorMessage('');
     try {
+      const sentAt = Date.now();
       const data = await api('/api/preparations/start', {
         method: 'POST',
         body: JSON.stringify({ dni, codigo, purpose })
       });
+      const receivedAt = Date.now();
+      const sessionClockOffset = Number.isFinite(Number(data.serverNowEpochMs))
+        ? Number(data.serverNowEpochMs) - Math.round((sentAt + receivedAt) / 2)
+        : serverOffset;
+      setServerOffset(sessionClockOffset);
       updatePreparation(data.preparation);
-      openSecureSession(data.preparation, data.reportToken);
+      openSecureSession(data.preparation, data.reportToken, sessionClockOffset);
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
