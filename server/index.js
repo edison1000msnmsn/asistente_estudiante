@@ -17,8 +17,19 @@ import {
 } from './preparation-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
+const railwayVolumeDir = cleanStoragePath(process.env.RAILWAY_VOLUME_MOUNT_PATH);
+const configuredDataDir = cleanStoragePath(process.env.DATA_DIR);
+const dataDir = configuredDataDir
+  ? path.resolve(configuredDataDir)
+  : railwayVolumeDir
+    ? path.resolve(railwayVolumeDir)
+    : path.join(__dirname, 'data');
+const dataStorage = configuredDataDir ? 'configured' : railwayVolumeDir ? 'railway_volume' : 'ephemeral';
 const dbPath = path.join(dataDir, 'db.json');
+
+function cleanStoragePath(value) {
+  return String(value || '').trim();
+}
 
 const env = {
   port: Number(process.env.PORT || 3000),
@@ -839,7 +850,13 @@ app.use(cors({
 }));
 app.use(rateLimit({ windowMs: 60_000, limit: env.publicRateLimit, standardHeaders: true, legacyHeaders: false }));
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'asistente-de-estudiantes', now: new Date().toISOString() }));
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  service: 'asistente-de-estudiantes',
+  now: new Date().toISOString(),
+  storage: dataStorage,
+  persistentStorage: dataStorage !== 'ephemeral'
+}));
 
 app.get('/api/time', (_req, res) => {
   res.json({ ok: true, serverTime: new Date().toISOString(), epochMs: Date.now() });

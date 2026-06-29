@@ -111,6 +111,13 @@ test.after(async () => {
   await fs.rm(dataDir, { recursive: true, force: true });
 });
 
+test('informa si el almacenamiento fue configurado', async () => {
+  const health = await request('/health');
+  assert.equal(health.response.status, 200);
+  assert.equal(health.data.storage, 'configured');
+  assert.equal(health.data.persistentStorage, true);
+});
+
 test('crea una sola preparacion, protege reportes y descuenta una sola vez', async () => {
   const payload = JSON.stringify({
     dni: '72769843',
