@@ -10,6 +10,8 @@ test('permite el flujo seguro esperado', () => {
   assert.equal(canTransitionPreparation('prepared', 'page_loading'), true);
   assert.equal(canTransitionPreparation('page_loading', 'form_waiting'), true);
   assert.equal(canTransitionPreparation('form_waiting', 'security_pending'), true);
+  assert.equal(canTransitionPreparation('security_pending', 'security_retry'), true);
+  assert.equal(canTransitionPreparation('security_retry', 'security_ready'), true);
   assert.equal(canTransitionPreparation('security_pending', 'security_ready'), true);
   assert.equal(canTransitionPreparation('security_ready', 'ready_to_submit'), true);
   assert.equal(canTransitionPreparation('ready_to_submit', 'submitted'), true);
@@ -26,6 +28,7 @@ test('acepta un ticket que la pagina oficial muestra directamente', () => {
   assert.equal(canTransitionPreparation('prepared', 'success'), true);
   assert.equal(canTransitionPreparation('page_loading', 'already_issued'), true);
   assert.equal(canTransitionPreparation('security_pending', 'success'), true);
+  assert.equal(canTransitionPreparation('submitted', 'security_retry'), true);
   assert.equal(canTransitionPreparation('form_waiting', 'submitted'), false);
 });
 

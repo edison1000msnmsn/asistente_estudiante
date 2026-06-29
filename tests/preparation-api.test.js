@@ -52,7 +52,23 @@ test.before(async () => {
     },
     requests: {},
     ticketQueue: {},
-    preparations: {},
+    preparations: {
+      stalePreparation: {
+        id: 'stalePreparation',
+        dedupeKey: `${studentId}:2026-01-01:verify`,
+        studentId,
+        dni: '72769843',
+        codigo: '2021200783B',
+        purpose: 'verify',
+        status: 'security_pending',
+        createdAt: '2026-01-01T12:00:00.000Z',
+        updatedAt: '2026-01-01T12:00:00.000Z',
+        targetAt: '2026-01-01T12:00:00.000Z',
+        deadlineAt: '2026-01-01T12:05:00.000Z',
+        message: 'Esperando validacion.',
+        reportTokenHashes: []
+      }
+    },
     preparationEvents: [],
     attempts: [],
     usedIdempotencyKeys: {},
@@ -124,6 +140,7 @@ test('crea una sola preparacion, protege reportes y descuenta una sola vez', asy
     'page_loading',
     'form_waiting',
     'security_pending',
+    'security_retry',
     'security_ready',
     'ready_to_submit',
     'submitted',
@@ -149,6 +166,13 @@ test('crea una sola preparacion, protege reportes y descuenta una sola vez', asy
   const status = await request('/api/student/72769843%3A2021200783b/status');
   assert.equal(status.data.student.credits, 1);
   assert.equal(status.data.hasTicketToday, true);
+});
+
+test('cierra una preparacion activa que supero su limite', async () => {
+  const result = await request('/api/preparations/stalePreparation/status');
+  assert.equal(result.response.status, 200);
+  assert.equal(result.data.preparation.status, 'timeout');
+  assert.match(result.data.preparation.message, /vencio/i);
 });
 
 test('recupera directamente un ticket existente sin descontar otro cupo', async () => {

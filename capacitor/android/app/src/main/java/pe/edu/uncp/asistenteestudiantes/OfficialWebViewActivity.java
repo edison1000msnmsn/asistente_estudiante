@@ -49,6 +49,7 @@ import java.util.regex.Pattern;
 public class OfficialWebViewActivity extends Activity {
     private static final long[] FORM_RECOVERY_DELAYS_MS = {0, 1400, 3200, 6500, 11000};
     private static final long[] PRELOAD_RECOVERY_DELAYS_MS = {900, 2500, 6000};
+    private static final long[] SECURITY_RECOVERY_DELAYS_MS = {450, 1100, 2400};
     private static final long CLOSED_GRACE_MS = 8000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -81,7 +82,9 @@ public class OfficialWebViewActivity extends Activity {
     private boolean securityReadySeen = false;
     private boolean mainFrameLoadFailed = false;
     private boolean preloadRecoveryScheduled = false;
+    private boolean securityRecoveryScheduled = false;
     private int preloadRecoveryAttempt = 0;
+    private int securityRecoveryAttempt = 0;
     private int recoveryAttempt = 0;
     private long pageLoadStartedAt = 0;
     private String lastReportedStatus = "";
@@ -375,10 +378,12 @@ public class OfficialWebViewActivity extends Activity {
         String script = "(function(){"
                 + "function visible(el){if(!el)return false;var r=el.getBoundingClientRect();var s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';}"
                 + "function find(selectors){for(var i=0;i<selectors.length;i++){var el=document.querySelector(selectors[i]);if(el)return el;}return null;}"
+                + "function plain(value){var s=String(value||'');return s.normalize?s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,''):s;}"
+                + "function inputByPlaceholder(word){var list=document.querySelectorAll('input');for(var i=0;i<list.length;i++){if(plain(list[i].placeholder).toUpperCase().indexOf(word)>=0)return list[i];}return null;}"
                 + "function setValue(el,val){if(!el)return false;if(String(el.value||'').toUpperCase()===String(val).toUpperCase())return true;var p=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(p&&p.set)p.set.call(el,val);else el.value=val;var ev;try{ev=new InputEvent('input',{bubbles:true,inputType:'insertText',data:val});}catch(e){ev=new Event('input',{bubbles:true});}el.dispatchEvent(ev);el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return String(el.value||'').toUpperCase()===String(val).toUpperCase();}"
                 + "function buttonByText(){var list=document.querySelectorAll('button,input[type=\"submit\"]');for(var i=0;i<list.length;i++){var t=(list[i].innerText||list[i].value||'').trim();if(/GENERAR\\s+(EL\\s+)?TICKET/i.test(t))return list[i];}return null;}"
                 + "var dni=find(['#dni','input[name=\"t1_dni\"]','input[name=\"dni\"]','input[formcontrolname=\"dni\"]','input[placeholder*=\"DNI\" i]']);"
-                + "var codigo=find(['#codigo','input[name=\"t1_codigo\"]','input[name=\"codigo\"]','input[formcontrolname=\"codigo\"]','input[placeholder*=\"Matrícula\" i]','input[placeholder*=\"Matricula\" i]','input[placeholder*=\"Código\" i]']);"
+                + "var codigo=find(['#codigo','input[name=\"t1_codigo\"]','input[name=\"codigo\"]','input[formcontrolname=\"codigo\"]'])||inputByPlaceholder('MATRICULA')||inputByPlaceholder('CODIGO');"
                 + "var button=find(['.btn-register','form button[type=\"submit\"]','button[type=\"submit\"]'])||buttonByText();"
                 + "var form=!!(dni&&codigo&&visible(dni)&&visible(codigo));"
                 + "var dniOk=form&&setValue(dni," + JSONObject.quote(dni) + ");"
@@ -391,11 +396,13 @@ public class OfficialWebViewActivity extends Activity {
                 + "var challenge=challengeFrames.some(function(f){return visible(f);});"
                 + "var bodyText=(document.body&&document.body.innerText||'').slice(0,20000);"
                 + "var upper=bodyText.toUpperCase();"
+                + "var normalizedUpper=plain(upper);"
                 + "var ticketDetected=/TICKET\\s+VIRTUAL\\s*#|TICKET\\s+GENERADO\\s+EXITOSAMENTE|GENERADO\\s+EXITOSAMENTE|IMPRIMIR\\s+TICKET/.test(upper);"
+                + "var sessionNotReady=/LA\\s+SESION\\s+AUN\\s+NO\\s+ESTA\\s+LISTA|SESION\\s+NO\\s+ESTA\\s+LISTA/.test(normalizedUpper);"
                 + "var clicked=false;"
                 + "var disabled=!!(button&&(button.disabled||button.getAttribute('aria-disabled')==='true'));"
-                + "if(" + targetReached + "&&" + autoSubmit + "&&" + (!submitted) + "&&form&&dniOk&&codeOk&&securityReady&&button&&!disabled&&!window.__asistenteSubmitted){window.__asistenteSubmitted=true;button.click();clicked=true;}"
-                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:disabled,securityPresent:securityPresent,securityReady:securityReady,challenge:challenge,clicked:clicked,ticketDetected:ticketDetected,text:bodyText,url:location.href,title:document.title||''});"
+                + "if(" + targetReached + "&&" + autoSubmit + "&&" + (!submitted) + "&&!sessionNotReady&&form&&dniOk&&codeOk&&securityReady&&button&&!disabled&&!window.__asistenteSubmitted){window.__asistenteSubmitted=true;button.click();clicked=true;}"
+                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:disabled,securityPresent:securityPresent,securityReady:securityReady,challenge:challenge,clicked:clicked,ticketDetected:ticketDetected,sessionNotReady:sessionNotReady,text:bodyText,url:location.href,title:document.title||''});"
                 + "})();";
 
         webView.evaluateJavascript(script, raw -> {
@@ -425,6 +432,13 @@ public class OfficialWebViewActivity extends Activity {
                     return;
                 }
 
+                if (state.optBoolean("sessionNotReady")) {
+                    formVisible = state.optBoolean("form");
+                    scheduleSecurityRecovery();
+                    if (!stopped && !terminal) handler.postDelayed(this::runSecureTick, 250);
+                    return;
+                }
+
                 boolean form = state.optBoolean("form");
                 boolean securityReady = state.optBoolean("securityReady");
                 boolean challenge = state.optBoolean("challenge");
@@ -437,9 +451,12 @@ public class OfficialWebViewActivity extends Activity {
                     submitted = true;
                     setUiStatus("SOLICITUD ENVIADA");
                     log("Formulario oficial enviado una sola vez.");
-                    reportStatus("submitted", "Solicitud enviada una sola vez.", null);
+                    reportStatus("submitted", "Solicitud oficial enviada.", null);
                 } else if (!pageLoaded) {
                     setUiStatus("CARGANDO PAGINA");
+                } else if (submitted) {
+                    setUiStatus("ESPERANDO RESPUESTA OFICIAL");
+                    occasionalLog("Solicitud enviada; esperando confirmacion oficial.");
                 } else if (!form) {
                     setUiStatus("ESPERANDO FORMULARIO");
                     reportStatus("form_waiting", "Esperando que la web oficial habilite el formulario.", null);
@@ -487,6 +504,40 @@ public class OfficialWebViewActivity extends Activity {
         String currentUrl = webView.getUrl();
         if (currentUrl == null || !currentUrl.startsWith(originOf(targetUrl))) webView.loadUrl(targetUrl);
         else webView.reload();
+    }
+
+    private void scheduleSecurityRecovery() {
+        if (securityRecoveryScheduled || stopped || terminal) return;
+        if (securityRecoveryAttempt >= SECURITY_RECOVERY_DELAYS_MS.length) {
+            setUiStatus("SESION OFICIAL NO LISTA");
+            occasionalLog("La pagina oficial sigue sin habilitar su sesion interna.");
+            return;
+        }
+
+        int nextAttempt = securityRecoveryAttempt + 1;
+        long delay = SECURITY_RECOVERY_DELAYS_MS[securityRecoveryAttempt];
+        securityRecoveryScheduled = true;
+        setUiStatus("RENOVANDO SESION SEGURA");
+        JSONObject details = new JSONObject();
+        try {
+            details.put("recoveryAttempt", nextAttempt);
+        } catch (Exception ignored) {
+        }
+        reportStatus("security_retry", "La pagina oficial solicito renovar su sesion de seguridad.", details);
+        log("Sesion oficial no lista; renovacion " + nextAttempt + "/" + SECURITY_RECOVERY_DELAYS_MS.length + ".");
+
+        handler.postDelayed(() -> {
+            securityRecoveryScheduled = false;
+            if (stopped || terminal || webView == null) return;
+            securityRecoveryAttempt = nextAttempt;
+            submitted = false;
+            securityReadySeen = false;
+            formVisible = false;
+            pageLoaded = false;
+            mainFrameLoadFailed = false;
+            pageLoadStartedAt = correctedNow();
+            webView.reload();
+        }, delay);
     }
 
     private boolean shouldDeferTerminal(String status, boolean targetReached) {

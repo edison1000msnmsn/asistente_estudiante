@@ -3,6 +3,7 @@ export const ACTIVE_PREPARATION_STATUSES = new Set([
   'page_loading',
   'form_waiting',
   'security_pending',
+  'security_retry',
   'security_ready',
   'ready_to_submit',
   'submitted'
@@ -23,13 +24,14 @@ export const TERMINAL_PREPARATION_STATUSES = new Set([
 ]);
 
 const TRANSITIONS = {
-  prepared: new Set(['page_loading', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'cancelled', 'failed']),
-  page_loading: new Set(['form_waiting', 'security_pending', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
-  form_waiting: new Set(['security_pending', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
-  security_pending: new Set(['security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
-  security_ready: new Set(['ready_to_submit', 'submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
-  ready_to_submit: new Set(['submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
-  submitted: new Set(['success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'timeout', 'failed'])
+  prepared: new Set(['page_loading', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'timeout', 'cancelled', 'failed']),
+  page_loading: new Set(['form_waiting', 'security_pending', 'security_retry', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  form_waiting: new Set(['security_pending', 'security_retry', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  security_pending: new Set(['security_retry', 'security_ready', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  security_retry: new Set(['page_loading', 'form_waiting', 'security_pending', 'security_ready', 'ready_to_submit', 'submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  security_ready: new Set(['security_retry', 'ready_to_submit', 'submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  ready_to_submit: new Set(['security_retry', 'submitted', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'manual_required', 'timeout', 'failed']),
+  submitted: new Set(['security_retry', 'success', 'already_issued', 'sold_out', 'closed', 'invalid_student', 'restricted', 'timeout', 'failed'])
 };
 
 export function canTransitionPreparation(from, to) {
@@ -44,9 +46,10 @@ export function preparationStatusMessage(status) {
     page_loading: 'Cargando la pagina oficial.',
     form_waiting: 'Esperando que la web oficial habilite el formulario.',
     security_pending: 'Esperando validacion de seguridad de Cloudflare.',
+    security_retry: 'Renovando la sesion oficial de seguridad.',
     security_ready: 'Validacion de seguridad lista.',
     ready_to_submit: 'Formulario listo para enviar.',
-    submitted: 'Solicitud enviada una sola vez.',
+    submitted: 'Solicitud oficial enviada.',
     success: 'Ticket confirmado por la pagina oficial.',
     already_issued: 'La pagina oficial devolvio un ticket ya emitido.',
     sold_out: 'La pagina oficial informa que no quedan cupos.',

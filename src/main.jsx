@@ -156,6 +156,7 @@ const ACTIVE_PREPARATION_STATUSES = new Set([
   'page_loading',
   'form_waiting',
   'security_pending',
+  'security_retry',
   'security_ready',
   'ready_to_submit',
   'submitted'
@@ -180,6 +181,7 @@ function preparationStatusLabel(status) {
     page_loading: 'Cargando pagina',
     form_waiting: 'Esperando formulario',
     security_pending: 'Validando seguridad',
+    security_retry: 'Renovando sesion',
     security_ready: 'Seguridad lista',
     ready_to_submit: 'Listo para enviar',
     submitted: 'Solicitud enviada',
@@ -240,6 +242,9 @@ function preparationOutcome(preparation, status, id) {
   }
   if (current === 'security_pending') {
     return { tone: 'wait', icon: ShieldCheck, title: 'Validando seguridad', message: 'Cloudflare esta comprobando esta sesion oficial.' };
+  }
+  if (current === 'security_retry') {
+    return { tone: 'wait', icon: ShieldCheck, title: 'Renovando sesion', message: 'La pagina oficial pidio actualizar su sesion de seguridad.' };
   }
   if (ACTIVE_PREPARATION_STATUSES.has(current)) {
     return { tone: 'wait', icon: Clock3, title: 'Sesion preparada', message: preparation?.message || 'La pagina oficial se esta preparando.' };

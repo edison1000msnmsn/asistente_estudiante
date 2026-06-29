@@ -299,6 +299,18 @@ async function transitionPreparation(preparation, status, {
   return preparation;
 }
 
+async function expireStalePreparations(preparations, now = Date.now()) {
+  for (const preparation of preparations) {
+    if (!preparation.deadlineAt) continue;
+    const deadline = new Date(preparation.deadlineAt || 0).getTime();
+    if (!ACTIVE_PREPARATION_STATUSES.has(preparation.status) || !Number.isFinite(deadline)) continue;
+    if (now <= deadline + 15000) continue;
+    await transitionPreparation(preparation, 'timeout', {
+      message: 'La sesion vencio sin una respuesta confirmada de la pagina oficial.'
+    });
+  }
+}
+
 function requireAdmin(req, res, next) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.headers['x-admin-token'];
   if (!env.adminToken || token !== env.adminToken) return res.status(401).json({ ok: false, message: 'Token admin invalido.' });
@@ -1009,9 +1021,10 @@ app.get('/api/student/:id/queue', (req, res) => {
   res.status(410).json({ ok: false, status: 'legacy_queue_disabled', message: 'Consulte /api/student/:id/preparations.' });
 });
 
-app.get('/api/preparations/:id/status', (req, res) => {
+app.get('/api/preparations/:id/status', async (req, res) => {
   const preparation = db.preparations?.[req.params.id];
   if (!preparation) return res.status(404).json({ ok: false, message: 'Preparacion no encontrada.' });
+  await expireStalePreparations([preparation]);
   res.json({ ok: true, preparation: publicPreparation(preparation) });
 });
 
@@ -1041,11 +1054,13 @@ app.post('/api/preparations/:id/report', async (req, res) => {
   }
 });
 
-app.get('/api/student/:id/preparations', (req, res) => {
+app.get('/api/student/:id/preparations', async (req, res) => {
   const [dni = '', ...codeParts] = decodeURIComponent(req.params.id).split(':');
   const student = db.students[req.params.id] || findStudentByCredentials(dni, codeParts.join(':'));
-  const preparations = Object.values(db.preparations || {})
-    .filter((item) => item.studentId === (student?.id || req.params.id))
+  const studentPreparations = Object.values(db.preparations || {})
+    .filter((item) => item.studentId === (student?.id || req.params.id));
+  await expireStalePreparations(studentPreparations);
+  const preparations = studentPreparations
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 10);
   res.json({ ok: true, preparations: preparations.map(publicPreparation) });
@@ -1124,15 +1139,19 @@ app.post('/admin/config', requireAdmin, async (req, res) => {
 
 app.get('/admin/attempts', requireAdmin, (_req, res) => res.json({ ok: true, attempts: db.attempts.slice(0, 500) }));
 
-app.get('/admin/queue', requireAdmin, (_req, res) => {
-  const jobs = Object.values(db.preparations || {})
+app.get('/admin/queue', requireAdmin, async (_req, res) => {
+  const allPreparations = Object.values(db.preparations || {});
+  await expireStalePreparations(allPreparations);
+  const jobs = allPreparations
     .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     .slice(0, 500);
   res.json({ ok: true, jobs: jobs.map(publicPreparation), legacyAlias: true });
 });
 
-app.get('/admin/preparations', requireAdmin, (_req, res) => {
-  const preparations = Object.values(db.preparations || {})
+app.get('/admin/preparations', requireAdmin, async (_req, res) => {
+  const allPreparations = Object.values(db.preparations || {});
+  await expireStalePreparations(allPreparations);
+  const preparations = allPreparations
     .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     .slice(0, 500);
   res.json({ ok: true, preparations: preparations.map(publicPreparation) });
@@ -1142,10 +1161,11 @@ app.get('/admin/preparation-events', requireAdmin, (_req, res) => {
   res.json({ ok: true, events: db.preparationEvents.slice(0, 1000) });
 });
 
-app.get('/admin/stats', requireAdmin, (_req, res) => {
+app.get('/admin/stats', requireAdmin, async (_req, res) => {
   const attempts = db.attempts;
   const queueJobs = Object.values(db.ticketQueue || {});
   const preparations = Object.values(db.preparations || {});
+  await expireStalePreparations(preparations);
   const today = limaDayKey();
   const todayPreparations = preparations.filter((item) => (
     limaDayKey(item.targetAt || item.createdAt) === today
