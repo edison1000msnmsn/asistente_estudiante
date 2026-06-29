@@ -29,7 +29,8 @@ test('acepta un ticket que la pagina oficial muestra directamente', () => {
   assert.equal(canTransitionPreparation('page_loading', 'already_issued'), true);
   assert.equal(canTransitionPreparation('security_pending', 'success'), true);
   assert.equal(canTransitionPreparation('submitted', 'security_retry'), true);
-  assert.equal(canTransitionPreparation('form_waiting', 'submitted'), false);
+  assert.equal(canTransitionPreparation('prepared', 'submitted'), true);
+  assert.equal(canTransitionPreparation('form_waiting', 'submitted'), true);
 });
 
 test('mantiene el resultado hasta el mediodia de Lima', () => {

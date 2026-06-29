@@ -10,8 +10,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
@@ -74,6 +76,7 @@ public class OfficialWebViewActivity extends Activity {
     private boolean autoSubmit;
     private boolean stopped = false;
     private boolean submitted = false;
+    private boolean tapInProgress = false;
     private boolean terminal = false;
     private boolean pageLoaded = false;
     private boolean inspectionInFlight = false;
@@ -399,10 +402,10 @@ public class OfficialWebViewActivity extends Activity {
                 + "var normalizedUpper=plain(upper);"
                 + "var ticketDetected=/TICKET\\s+VIRTUAL\\s*#|TICKET\\s+GENERADO\\s+EXITOSAMENTE|GENERADO\\s+EXITOSAMENTE|IMPRIMIR\\s+TICKET/.test(upper);"
                 + "var sessionNotReady=/LA\\s+SESION\\s+AUN\\s+NO\\s+ESTA\\s+LISTA|SESION\\s+NO\\s+ESTA\\s+LISTA/.test(normalizedUpper);"
-                + "var clicked=false;"
                 + "var disabled=!!(button&&(button.disabled||button.getAttribute('aria-disabled')==='true'));"
-                + "if(" + targetReached + "&&" + autoSubmit + "&&" + (!submitted) + "&&!sessionNotReady&&form&&dniOk&&codeOk&&securityReady&&button&&!disabled&&!window.__asistenteSubmitted){window.__asistenteSubmitted=true;button.click();clicked=true;}"
-                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:disabled,securityPresent:securityPresent,securityReady:securityReady,challenge:challenge,clicked:clicked,ticketDetected:ticketDetected,sessionNotReady:sessionNotReady,text:bodyText,url:location.href,title:document.title||''});"
+                + "var readyToTap=" + targetReached + "&&" + autoSubmit + "&&" + (!submitted) + "&&!sessionNotReady&&form&&dniOk&&codeOk&&securityReady&&button&&!disabled;"
+                + "var tapX=0,tapY=0;if(readyToTap){button.scrollIntoView({block:'center',inline:'center'});var br=button.getBoundingClientRect();tapX=br.left+br.width/2;tapY=br.top+br.height/2;}"
+                + "return JSON.stringify({form:form,dniOk:dniOk,codeOk:codeOk,button:!!button,buttonDisabled:disabled,securityPresent:securityPresent,securityReady:securityReady,challenge:challenge,readyToTap:readyToTap,tapX:tapX,tapY:tapY,viewportWidth:window.innerWidth||0,viewportHeight:window.innerHeight||0,ticketDetected:ticketDetected,sessionNotReady:sessionNotReady,text:bodyText,url:location.href,title:document.title||''});"
                 + "})();";
 
         webView.evaluateJavascript(script, raw -> {
@@ -442,20 +445,18 @@ public class OfficialWebViewActivity extends Activity {
                 boolean form = state.optBoolean("form");
                 boolean securityReady = state.optBoolean("securityReady");
                 boolean challenge = state.optBoolean("challenge");
-                boolean clicked = state.optBoolean("clicked");
+                boolean readyToTap = state.optBoolean("readyToTap");
                 formVisible = form;
                 formSeen = formSeen || form;
                 securityReadySeen = securityReadySeen || securityReady;
 
-                if (clicked && !submitted) {
-                    submitted = true;
-                    setUiStatus("SOLICITUD ENVIADA");
-                    log("Formulario oficial enviado una sola vez.");
-                    reportStatus("submitted", "Solicitud oficial enviada.", null);
+                if (readyToTap && !submitted && !tapInProgress) {
+                    performNativeButtonTap(state);
                 } else if (!pageLoaded) {
                     setUiStatus("CARGANDO PAGINA");
                 } else if (submitted) {
-                    setUiStatus("ESPERANDO RESPUESTA OFICIAL");
+                    long remainingSeconds = Math.max(0, (deadlineAt - correctedNow() + 999) / 1000);
+                    setUiStatus("ESPERANDO RESPUESTA - " + remainingSeconds + " s");
                     occasionalLog("Solicitud enviada; esperando confirmacion oficial.");
                 } else if (!form) {
                     setUiStatus("ESPERANDO FORMULARIO");
@@ -506,6 +507,44 @@ public class OfficialWebViewActivity extends Activity {
         else webView.reload();
     }
 
+    private void performNativeButtonTap(JSONObject state) {
+        double viewportWidth = state.optDouble("viewportWidth", 0);
+        double viewportHeight = state.optDouble("viewportHeight", 0);
+        if (viewportWidth <= 0 || viewportHeight <= 0 || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
+            occasionalLog("El boton aun no tiene coordenadas validas.");
+            return;
+        }
+
+        float x = (float) (state.optDouble("tapX", 0) * webView.getWidth() / viewportWidth);
+        float y = (float) (state.optDouble("tapY", 0) * webView.getHeight() / viewportHeight);
+        if (x <= 0 || y <= 0 || x >= webView.getWidth() || y >= webView.getHeight()) {
+            occasionalLog("Ajustando la posicion visible del boton oficial.");
+            return;
+        }
+
+        tapInProgress = true;
+        long downTime = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0);
+        webView.dispatchTouchEvent(down);
+        down.recycle();
+
+        handler.postDelayed(() -> {
+            if (stopped || terminal || webView == null) {
+                tapInProgress = false;
+                return;
+            }
+            long eventTime = SystemClock.uptimeMillis();
+            MotionEvent up = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x, y, 0);
+            webView.dispatchTouchEvent(up);
+            up.recycle();
+            tapInProgress = false;
+            submitted = true;
+            setUiStatus("SOLICITUD ENVIADA");
+            log("Toque nativo realizado sobre Generar Ticket.");
+            reportStatus("submitted", "Solicitud oficial enviada mediante toque nativo.", null);
+        }, 75);
+    }
+
     private void scheduleSecurityRecovery() {
         if (securityRecoveryScheduled || stopped || terminal) return;
         if (securityRecoveryAttempt >= SECURITY_RECOVERY_DELAYS_MS.length) {
@@ -531,6 +570,7 @@ public class OfficialWebViewActivity extends Activity {
             if (stopped || terminal || webView == null) return;
             securityRecoveryAttempt = nextAttempt;
             submitted = false;
+            tapInProgress = false;
             securityReadySeen = false;
             formVisible = false;
             pageLoaded = false;
